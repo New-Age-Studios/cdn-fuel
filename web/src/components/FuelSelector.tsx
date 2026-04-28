@@ -9,12 +9,31 @@ interface FuelSelectorProps {
   isElectric?: boolean;
   isSyphon?: boolean;
   isJerryCanRefuel?: boolean;
+  isJerryCanRefill?: boolean;
+  jerryCans?: any[];
+  selectedJerryCanIndex?: number;
+  onJerryCanSelect?: (index: number) => void;
   syphonMode?: 'in' | 'out'; // 'in' = refuel car, 'out' = siphon from car
   onConfirm: (amount: number) => void;
   onClose: () => void;
 }
 
-const FuelSelector: React.FC<FuelSelectorProps> = ({ maxFuel, currentFuel, price, isJerryCan, isElectric, isSyphon, isJerryCanRefuel, syphonMode, onConfirm, onClose }) => {
+const FuelSelector: React.FC<FuelSelectorProps> = ({ 
+  maxFuel, 
+  currentFuel, 
+  price, 
+  isJerryCan, 
+  isElectric, 
+  isSyphon, 
+  isJerryCanRefuel, 
+  isJerryCanRefill,
+  jerryCans = [],
+  selectedJerryCanIndex = 0,
+  onJerryCanSelect,
+  syphonMode, 
+  onConfirm, 
+  onClose 
+}) => {
   const [amount, setAmount] = useState<number>(0);
   const { theme, toggleTheme } = useTheme();
 
@@ -27,6 +46,7 @@ const FuelSelector: React.FC<FuelSelectorProps> = ({ maxFuel, currentFuel, price
   };
 
   const getTitle = () => {
+      if (isJerryCanRefill) return 'Reabastecer Galão';
       if (isJerryCanRefuel) return 'Abastecendo com Galão';
       if (isSyphon) return syphonMode === 'out' ? 'Drenando Veículo' : 'Abastecendo Veículo';
       if (isJerryCan) return 'Quantidade';
@@ -35,6 +55,7 @@ const FuelSelector: React.FC<FuelSelectorProps> = ({ maxFuel, currentFuel, price
   }
 
   const getSubtitle = () => {
+      if (isJerryCanRefill) return 'Quanto deseja abastecer no galão?';
       if (isJerryCanRefuel) return 'Quanto deseja colocar no veículo?';
       if (isSyphon) return syphonMode === 'out' ? 'Quanto deseja retirar?' : 'Quanto deseja colocar?';
       if (isJerryCan) return 'Quantos galões deseja comprar?';
@@ -43,13 +64,13 @@ const FuelSelector: React.FC<FuelSelectorProps> = ({ maxFuel, currentFuel, price
   }
 
   return (
-    <div className="flex w-full max-w-4xl bg-dashboard-bg border border-border-color rounded-xl overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-300">
+    <div className="flex w-full max-w-5xl bg-dashboard-bg border border-border-color rounded-xl overflow-hidden shadow-2xl animate-in fade-in zoom-in duration-300">
       
        {/* Sidebar / Decoration Left */}
-       <div className="w-20 bg-dashboard-card border-r border-border-color flex flex-col items-center py-6 gap-6">
+       <div className="w-20 bg-dashboard-card border-r border-border-color flex flex-col items-center py-6 gap-6 shrink-0">
         <div className={`size-10 bg-dashboard-element rounded-lg flex items-center justify-center shadow-inner ${isElectric ? 'text-electric-yellow' : 'text-neon-green'}`}>
           <span className="material-symbols-outlined text-2xl drop-shadow-sm">
-              {isJerryCan ? 'propane_tank' : isElectric ? 'bolt' : isSyphon ? 'construction' : isJerryCanRefuel ? 'propane_tank' : 'local_gas_station'}
+              {isJerryCan ? 'propane_tank' : isElectric ? 'bolt' : isSyphon ? 'construction' : isJerryCanRefuel || isJerryCanRefill ? 'propane_tank' : 'local_gas_station'}
           </span>
         </div>
         
@@ -65,6 +86,41 @@ const FuelSelector: React.FC<FuelSelectorProps> = ({ maxFuel, currentFuel, price
             <span className="material-symbols-outlined">arrow_back</span>
         </button>
       </div>
+
+      {/* Jerry Can Selection List (If applicable) */}
+      {isJerryCanRefill && jerryCans.length > 1 && (
+        <div className="w-64 bg-dashboard-card border-r border-border-color p-4 flex flex-col gap-3 overflow-y-auto max-h-[600px] scrollbar-hide shrink-0">
+            <h2 className="text-xs font-black text-text-muted uppercase tracking-widest mb-2 px-1">Meus Galões</h2>
+            {jerryCans.map((can, idx) => (
+                <button
+                    key={idx}
+                    onClick={() => onJerryCanSelect?.(idx)}
+                    className={`p-4 rounded-xl border transition-all flex flex-col gap-2 text-left ${
+                        selectedJerryCanIndex === idx 
+                        ? 'bg-neon-green/10 border-neon-green text-primary shadow-lg shadow-neon-green/5' 
+                        : 'bg-dashboard-element/50 border-border-color hover:border-text-muted/30 text-text-muted'
+                    }`}
+                >
+                    <div className="flex items-center justify-between w-full">
+                        <span className="text-xs font-black uppercase tracking-tight">Galão #{idx + 1}</span>
+                        <span className={`material-symbols-outlined text-lg ${selectedJerryCanIndex === idx ? 'text-neon-green' : 'text-text-muted/30'}`}>
+                            {selectedJerryCanIndex === idx ? 'check_circle' : 'radio_button_unchecked'}
+                        </span>
+                    </div>
+                    <div className="flex items-baseline gap-1">
+                        <span className="text-xl font-black">{Math.floor(can.fuel)}</span>
+                        <span className="text-[10px] font-bold opacity-60">/ {can.cap}L</span>
+                    </div>
+                    <div className="w-full bg-black/20 h-1 rounded-full overflow-hidden">
+                        <div 
+                            className={`h-full transition-all duration-500 ${selectedJerryCanIndex === idx ? 'bg-neon-green' : 'bg-text-muted/30'}`} 
+                            style={{ width: `${(can.fuel / can.cap) * 100}%` }}
+                        />
+                    </div>
+                </button>
+            ))}
+        </div>
+      )}
 
       <div className="flex-1 p-8 flex flex-col min-h-0">
           <div className="flex items-center justify-between mb-8">
@@ -110,19 +166,32 @@ const FuelSelector: React.FC<FuelSelectorProps> = ({ maxFuel, currentFuel, price
              <div className="bg-dashboard-card border border-border-color rounded-xl p-5 relative overflow-hidden group shadow-sm">
                   <div className="absolute top-0 right-0 p-4 opacity-5 group-hover:opacity-10 transition-opacity">
                       <span className="material-symbols-outlined text-6xl text-primary">
-                          {isElectric ? 'battery_charging_full' : isSyphon ? 'local_gas_station' : isJerryCanRefuel ? 'local_gas_station' : 'ev_station'}
+                          {isElectric ? 'battery_charging_full' : isSyphon ? 'local_gas_station' : isJerryCanRefuel || isJerryCanRefill ? 'local_gas_station' : 'ev_station'}
                       </span>
                   </div>
                   <p className="text-xs font-black text-text-muted uppercase tracking-wider">
-                      {isElectric ? 'Bateria Prevista' : 'Tanque Previsto'}
+                      {isElectric ? 'Bateria Prevista' : (isJerryCanRefill ? 'Galão Previsto' : 'Tanque Previsto')}
                   </p>
                   <div className="mt-2 flex items-baseline gap-1">
-                      <span className="text-4xl font-black text-primary tracking-tighter">{Math.min(100, Math.round(currentFuel + (isSyphon && syphonMode === 'out' ? -amount : amount)))}%</span>
-                      <span className="text-sm font-bold text-text-muted">{isElectric ? 'CARREGADA' : 'CHEIO'}</span>
+                      <span className="text-4xl font-black text-primary tracking-tighter">
+                          {isJerryCanRefill 
+                            ? Math.min(jerryCans[selectedJerryCanIndex]?.cap || 100, Math.round(currentFuel + amount))
+                            : Math.min(100, Math.round(currentFuel + (isSyphon && syphonMode === 'out' ? -amount : amount)))
+                          }{isJerryCanRefill ? 'L' : '%'}
+                      </span>
+                      <span className="text-sm font-bold text-text-muted">{isElectric ? 'CARREGADA' : (isJerryCanRefill ? 'VOLUME' : 'CHEIO')}</span>
                   </div>
                   {/* Mini Progress */}
                   <div className="w-full bg-dashboard-element h-1.5 rounded-full mt-3 overflow-hidden shadow-inner">
-                       <div className={`h-full ${isElectric ? 'bg-electric-yellow shadow-[0_0_10px_#facc15]' : 'bg-neon-green shadow-[0_0_10px_rgba(34,197,94,0.5)]'} transition-all duration-300`} style={{ width: `${Math.min(100, Math.round(currentFuel + (isSyphon && syphonMode === 'out' ? -amount : amount)))}%` }}></div>
+                       <div className={`h-full ${isElectric ? 'bg-electric-yellow shadow-[0_0_10px_#facc15]' : 'bg-neon-green shadow-[0_0_10px_rgba(34,197,94,0.5)]'} transition-all duration-300`} 
+                            style={{ 
+                                width: `${
+                                    isJerryCanRefill 
+                                    ? (Math.min(jerryCans[selectedJerryCanIndex]?.cap || 100, Math.round(currentFuel + amount)) / (jerryCans[selectedJerryCanIndex]?.cap || 100)) * 100
+                                    : Math.min(100, Math.round(currentFuel + (isSyphon && syphonMode === 'out' ? -amount : amount)))
+                                }%` 
+                            }}
+                       ></div>
                   </div>
              </div>
              )}

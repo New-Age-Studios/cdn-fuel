@@ -40,7 +40,7 @@ RegisterNetEvent("cdn-fuel:server:OpenMenu", function(amount, inGasStation, hasW
 	end
 end)
 
-RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, FuelPrice, electric, cachedPrice, location)
+RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, FuelPrice, electric, cachedPrice, location, liters)
 	local src = source
 	if not src then return end
 	local Player = QBCore.Functions.GetPlayer(src)
@@ -51,22 +51,39 @@ RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, Fu
 	end
 	
     -- Sales Logging
+    if not location or location == 0 then
+        -- Fallback: try to find location by proximity if not passed (useful for some electric chargers)
+        -- We can't easily do it here without coordinates, but usually location should be passed.
+        if Config.FuelDebug then print("[CDN-FUEL] Warning: PayForFuel called with Location 0/nil") end
+    end
+
     if location and location ~= 0 then
         local buyerName = Player.PlayerData.charinfo.firstname .. " " .. Player.PlayerData.charinfo.lastname
-        local fuelAmount = 0
-        if FuelPrice and FuelPrice > 0 then
-             fuelAmount = total / FuelPrice -- Rough estimate if not passed explicitly, or we can trust client? Client logic for amount is 'cost' here. 'amount' arg is COST.
-             -- Wait, 'amount' in PayForFuel is COST/TOTAL?
-             -- Line 53 says: "Attempting to charge client: $"..total.." for Fuel".
-             -- So 'amount' is MONEY.
-             -- Fuel Liters = amount / FuelPrice (approx).
-             -- Or I should calculate it better.
-             -- Let's just store the cost.
-             fuelAmount = math.floor((amount / (FuelPrice + GlobalTax(FuelPrice))) * 100) / 100
+        local fuelAmount = liters or 0
+        if (not fuelAmount or fuelAmount == 0) and FuelPrice and FuelPrice > 0 then
+             -- Liter/kWh Amount = Total Money / (Price + Tax)
+             fuelAmount = math.floor((total / (FuelPrice + GlobalTax(FuelPrice))) * 100) / 100
         end
 
         local insertData = "INSERT INTO fuel_station_sales (station_location, buyer_name, amount, cost, payment_type) VALUES (?, ?, ?, ?, ?)"
         MySQL.Async.execute(insertData, {location, buyerName, fuelAmount, total, purchasetype})
+
+        -- Update Station Balance & Deduct Stock if owned
+        if Config.PlayerOwnedGasStationsEnabled then
+             -- Update Balance
+             MySQL.Async.execute('UPDATE fuel_stations SET balance = balance + ? WHERE location = ? AND owned = 1', {total, location})
+             
+             -- Deduct Stock or Add Electric Consumption
+             if fuelAmount > 0 then
+                if not electric then
+                    MySQL.Async.execute('UPDATE fuel_stations SET fuel = fuel - ? WHERE location = ? AND owned = 1', {fuelAmount, location})
+                else
+                    -- Track kWh consumption for the owner to pay later
+                    MySQL.Async.execute('UPDATE fuel_stations SET electric_consumed = electric_consumed + ? WHERE location = ? AND owned = 1', {fuelAmount, location})
+                    if Config.FuelDebug then print("[CDN-FUEL] Tracked "..fuelAmount.." kWh for Station #"..location) end
+                end
+             end
+        end
     end
 
 	local moneyremovetype = purchasetype
@@ -82,12 +99,14 @@ RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, Fu
 	Player.Functions.RemoveMoney(moneyremovetype, total, payString)
 end)
 
-RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amount, location)
+RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amount, location, isAviation)
 	local src = source if not src then return end
     local amount = amount or 1
 	local Player = QBCore.Functions.GetPlayer(src) if not Player then return end
-	local tax = GlobalTax(Config.JerryCanPrice) 
-    local total = math.ceil((Config.JerryCanPrice + tax) * amount)
+	
+    local basePrice = isAviation and Config.AviationJerryCanPrice or Config.JerryCanPrice
+    local tax = GlobalTax(basePrice) 
+    local total = math.ceil((basePrice + tax) * amount)
 	local moneyremovetype = purchasetype
 	if purchasetype == "bank" then
 		moneyremovetype = "bank"
@@ -98,7 +117,8 @@ RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amo
     -- Sales Logging & Station Balance
     if location and location ~= 0 then
         local buyerName = Player.PlayerData.charinfo.firstname .. " " .. Player.PlayerData.charinfo.lastname
-        local fuelToDeduct = (Config.JerryCanGas or 0) * (amount or 1)
+        local capacity = isAviation and Config.AviationJerryCanGas or Config.JerryCanGas
+        local fuelToDeduct = (capacity or 0) * (amount or 1)
         
         -- Log the total fuel amount (Liters), not the quantity of items
         local insertData = "INSERT INTO fuel_station_sales (station_location, buyer_name, amount, cost, payment_type) VALUES (?, ?, ?, ?, ?)"
@@ -116,17 +136,20 @@ RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amo
         end
     end
 
+	local itemName = isAviation and 'aviation_jerrycan' or 'jerrycan'
+	local capacity = isAviation and Config.AviationJerryCanGas or Config.JerryCanGas
+
 	if Config.Ox.Inventory then
-		local info = {cdn_fuel = tostring(Config.JerryCanGas)}
-		exports.ox_inventory:AddItem(src, 'jerrycan', amount, info)
-		local hasItem = exports.ox_inventory:GetItem(src, 'jerrycan', info, 1)
+		local info = {cdn_fuel = tostring(capacity)}
+		exports.ox_inventory:AddItem(src, itemName, amount, info)
+		local hasItem = exports.ox_inventory:GetItem(src, itemName, info, 1)
 		if hasItem then
 			Player.Functions.RemoveMoney(moneyremovetype, total, Lang:t("jerry_can_payment_label"))
 		end
 	else
-		local info = {gasamount = Config.JerryCanGas}
-		if Player.Functions.AddItem("jerrycan", amount, false, info) then -- Dont remove money if AddItem() not possible!
-			TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items['jerrycan'], "add", amount)
+		local info = {gasamount = capacity}
+		if Player.Functions.AddItem(itemName, amount, false, info) then -- Dont remove money if AddItem() not possible!
+			TriggerClientEvent('inventory:client:ItemBox', src, QBCore.Shared.Items[itemName], "add", amount)
 			Player.Functions.RemoveMoney(moneyremovetype, total, Lang:t("jerry_can_payment_label"))
 		end
 	end
@@ -136,6 +159,25 @@ end)
 if Config.UseJerryCan then
 	QBCore.Functions.CreateUseableItem("jerrycan", function(source, item)
 		local src = source
+		if Config.Ox.Inventory then
+			if not item.metadata or item.metadata.cdn_fuel == nil then
+				item.metadata = item.metadata or {}
+				item.metadata.cdn_fuel = '0'
+				exports.ox_inventory:SetMetadata(src, item.slot, item.metadata)
+			end
+		end
+		TriggerClientEvent('cdn-fuel:jerrycan:refuelmenu', src, item)
+	end)
+	
+	QBCore.Functions.CreateUseableItem("aviation_jerrycan", function(source, item)
+		local src = source
+		if Config.Ox.Inventory then
+			if not item.metadata or item.metadata.cdn_fuel == nil then
+				item.metadata = item.metadata or {}
+				item.metadata.cdn_fuel = '0'
+				exports.ox_inventory:SetMetadata(src, item.slot, item.metadata)
+			end
+		end
 		TriggerClientEvent('cdn-fuel:jerrycan:refuelmenu', src, item)
 	end)
 end
@@ -163,6 +205,8 @@ RegisterNetEvent('cdn-fuel:info', function(type, amount, srcPlayerData, itemdata
 	if Config.Ox.Inventory then
 		if itemdata == "jerrycan" then
 			if amount < 1 or amount > Config.JerryCanCap then if Config.FuelDebug then print("Error, amount is invalid (< 1 or > "..Config.SyphonKitCap..")! Amount:" ..amount) end return end
+		elseif itemdata == "aviation_jerrycan" then
+			if amount < 1 or amount > Config.AviationJerryCanCap then return end
 		elseif itemdata == "syphoningkit" then
 			if amount < 1 or amount > Config.SyphonKitCap then if Config.SyphonDebug then print("Error, amount is invalid (< 1 or > "..Config.SyphonKitCap..")! Amount:" ..amount) end return end
 		end
@@ -170,7 +214,7 @@ RegisterNetEvent('cdn-fuel:info', function(type, amount, srcPlayerData, itemdata
 			-- Ignore --
 			itemdata.metadata = itemdata.metadata
 			itemdata.slot = itemdata.slot
-			if ItemName == 'jerrycan' then
+			if ItemName == 'jerrycan' or ItemName == 'aviation_jerrycan' then
 				local fuel_amount = tonumber(itemdata.metadata.cdn_fuel)
 				if type == "add" then
 					fuel_amount = fuel_amount + amount
@@ -205,6 +249,8 @@ RegisterNetEvent('cdn-fuel:info', function(type, amount, srcPlayerData, itemdata
 	else
 		if itemdata.info.name == "jerrycan" then
 			if amount < 1 or amount > Config.JerryCanCap then if Config.FuelDebug then print("Error, amount is invalid (< 1 or > "..Config.SyphonKitCap..")! Amount:" ..amount) end return end
+		elseif itemdata.info.name == "aviation_jerrycan" then
+			if amount < 1 or amount > Config.AviationJerryCanCap then return end
 		elseif itemdata.info.name == "syphoningkit" then
 			if amount < 1 or amount > Config.SyphonKitCap then if Config.SyphonDebug then print("Error, amount is invalid (< 1 or > "..Config.SyphonKitCap..")! Amount:" ..amount) end return end
 		end

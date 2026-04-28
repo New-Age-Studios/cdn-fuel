@@ -11,6 +11,31 @@ if Config.ElectricVehicleCharging then
         Rope = nil
     end
 
+    -- Global Electric Charger Visual Debug
+    if Config.FuelDebug then
+        CreateThread(function()
+            while true do
+                local sleep = 1500
+                local ped = PlayerPedId()
+                local coords = GetEntityCoords(ped)
+                local pumpCoords, pumpEntity = GetClosestPump(coords, true)
+
+                if pumpEntity and pumpEntity ~= 0 then
+                    local dist = #(coords - pumpCoords)
+                    if dist < 10.0 then
+                        sleep = 0
+                        local offset = Config.ElectricRopeOffset or vec3(0.0, 0.0, 1.76)
+                        local worldCoords = GetOffsetFromEntityInWorldCoords(pumpEntity, offset.x, offset.y, offset.z)
+                        -- Draw Sphere Marker
+                        local debugColor = HexToRGB(Config.DebugColor or "#FF00FF")
+                        DrawMarker(28, worldCoords.x, worldCoords.y, worldCoords.z, 0, 0, 0, 0, 0, 0, 0.1, 0.1, 0.1, debugColor.r, debugColor.g, debugColor.b, 200, false, false, 2, false, nil, nil, false)
+                    end
+                end
+                Wait(sleep)
+            end
+        end)
+    end
+
     -- Start
     AddEventHandler('onResourceStart', function(resource)
         if resource == GetCurrentResourceName() then
@@ -245,23 +270,25 @@ if Config.ElectricVehicleCharging then
         })
     end)
 
-    RegisterNetEvent('cdn-fuel:client:electric:ChargeVehicle', function(data)
-        if Config.FuelDebug then print("Charging Vehicle") end
-        if not Config.RenewedPhonePayment then 
-            purchasetype = data.purchasetype 
-        elseif data.purchasetype == "cash" then 
-            purchasetype = "cash"
+    RegisterNetEvent('cdn-fuel:client:electric:ChargeVehicle', function(purchasetype, fuelamounttotal)
+        if Config.FuelDebug then print("Charging Vehicle: "..tostring(fuelamounttotal).." via "..tostring(purchasetype)) end
+        local amount = 0
+        local pType = purchasetype
+        
+        if type(purchasetype) == "table" then
+            -- Fallback if somehow a table was passed
+            pType = purchasetype.purchasetype or RefuelPurchaseType
+            amount = purchasetype.fuelamounttotal or RefuelPossibleAmount
         else
-            purchasetype = RefuelPurchaseType
+            if not Config.RenewedPhonePayment or pType == "cash" then
+                amount = fuelamounttotal
+            else
+                amount = RefuelPossibleAmount
+            end
         end
-        if Config.FuelDebug then print("Purchase Type: "..purchasetype) end
-        if not Config.RenewedPhonePayment then 
-            amount = data.fuelamounttotal 
-        elseif data.purchasetype == "cash" then
-            amount = data.fuelamounttotal
-        elseif not data.fuelamounttotal then
-            amount = RefuelPossibleAmount 
-        end
+
+        if not pType then pType = RefuelPurchaseType or "cash" end
+        purchasetype = pType -- Set the outer scope variable if needed
         if not HoldingElectricNozzle then return end
         amount = tonumber(amount)
         if amount < 1 then return end
@@ -320,7 +347,7 @@ if Config.ElectricVehicleCharging then
             end
         end
 
-        local refillCost = (fuelamount * FuelPrice) + GlobalTax(fuelamount*FuelPrice)
+        local refillCost = (amount * FuelPrice) + GlobalTax(amount * FuelPrice)
         local vehicle = GetClosestVehicle()
         local ped = PlayerPedId()
         local time = amount * Config.RefuelTime
@@ -354,7 +381,9 @@ if Config.ElectricVehicleCharging then
                                 MoneyToGiveBack = (GlobalTax(remainingamount * FuelPrice) + (remainingamount * FuelPrice))
                                 TriggerServerEvent("cdn-fuel:server:phone:givebackmoney", MoneyToGiveBack)
                             else
-                                TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice)
+                                local finalrefuelamount = math.floor(Refuelamount)
+                                local finalCost = (finalrefuelamount * FuelPrice) + GlobalTax(finalrefuelamount * FuelPrice)
+                                TriggerServerEvent('cdn-fuel:server:PayForFuel', finalCost, purchasetype, FuelPrice, true, nil, CurrentLocation, finalrefuelamount)
                             end
                             local curfuel = GetFuel(vehicle)
                             local finalfuel = (curfuel + Refuelamount)
@@ -386,13 +415,11 @@ if Config.ElectricVehicleCharging then
                         },
                     }) then
                         refueling = false
-                        if purchasetype == "cash" then
-                            TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, true)
-                        elseif purchasetype == "bank" then
-                            TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, true)
+                        if not Config.RenewedPhonePayment or purchasetype == 'cash' then 
+                            TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, true, nil, CurrentLocation, amount) 
                         end
                         local curfuel = GetFuel(vehicle)
-                        local finalfuel = (curfuel + fuelamount)
+                        local finalfuel = (curfuel + amount)
                         if finalfuel > 99 and finalfuel < 100 then
                             SetFuel(vehicle, 100)
                         else
@@ -419,9 +446,11 @@ if Config.ElectricVehicleCharging then
                         disableCombat = true,
                     }, {}, {}, {}, function()
                         refueling = false
-                        if not Config.RenewedPhonePayment or purchasetype == 'cash' then TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, true) end
+                        if not Config.RenewedPhonePayment or purchasetype == 'cash' then 
+                            TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, true, nil, CurrentLocation, amount) 
+                        end
                         local curfuel = GetFuel(vehicle)
-                        local finalfuel = (curfuel + fuelamount)
+                        local finalfuel = (curfuel + amount)
                         if finalfuel > 99 and finalfuel < 100 then
                             SetFuel(vehicle, 100)
                         else
@@ -448,58 +477,100 @@ if Config.ElectricVehicleCharging then
     RegisterNetEvent('cdn-fuel:client:grabelectricnozzle', function()
         local ped = PlayerPedId()
         if HoldingElectricNozzle then return end
-        LoadAnimDict("anim@am_hold_up@male")
-        TaskPlayAnim(ped, "anim@am_hold_up@male", "shoplift_high", 2.0, 8.0, -1, 50, 0, 0, 0, 0)
-        TriggerServerEvent("InteractSound_SV:PlayOnSource", "pickupnozzle", 0.4)
-        Wait(300)
-        StopAnimTask(ped, "anim@am_hold_up@male", "shoplift_high", 1.0)
-        ElectricNozzle = CreateObject(joaat(Config.ElectricNozzleModel), 1.0, 1.0, 1.0, true, true, false)
-        local lefthand = GetPedBoneIndex(ped, 18905)
-        AttachEntityToEntity(ElectricNozzle, ped, lefthand, 0.24, 0.10, -0.052 --[[FWD BWD]], -45.0 --[[ClockWise]], 120.0 --[[Weird Middle Axis]], 75.00 --[[Counter Clockwise]], 0, 1, 0, 1, 0, 1)
-        local grabbedelectricnozzlecoords = GetEntityCoords(ped)
-        HoldingElectricNozzle = true
-        if Config.PumpHose == true then
-            local pumpCoords, pump = GetClosestPump(grabbedelectricnozzlecoords, true)
-            RopeLoadTextures()
-            while not RopeAreTexturesLoaded() do
-                Wait(0)
-                RopeLoadTextures()
-            end
-            while not pump do
-                Wait(0)
-            end
-            Rope = AddRope(pumpCoords.x, pumpCoords.y, pumpCoords.z, 0.0, 0.0, 0.0, 3.0, Config.RopeType['electric'], 1000.0, 0.0, 1.0, false, false, false, 1.0, true)
-            while not Rope do
-                Wait(0)
-            end
-            ActivatePhysics(Rope)
-            Wait(100)
-            local nozzlePos = GetEntityCoords(ElectricNozzle)
-            nozzlePos = GetOffsetFromEntityInWorldCoords(ElectricNozzle, -0.005, 0.185, -0.05)
-            AttachEntitiesToRope(Rope, pump, ElectricNozzle, pumpCoords.x, pumpCoords.y, pumpCoords.z + 1.76, nozzlePos.x, nozzlePos.y, nozzlePos.z, 5.0, false, false, nil, nil)
-        end
-        CreateThread(function()
-            while HoldingElectricNozzle do
-                local currentcoords = GetEntityCoords(ped)
-                local dist = #(grabbedelectricnozzlecoords - currentcoords)
-                if not TargetCreated then if Config.FuelTargetExport then exports[Config.TargetResource]:AllowRefuel(true, true) end end
-                TargetCreated = true
-                if dist > 7.5 then
-                    if TargetCreated then if Config.FuelTargetExport then exports[Config.TargetResource]:AllowRefuel(false, true) end end
-                    TargetCreated = true
-                    HoldingElectricNozzle = false
-                    DeleteObject(ElectricNozzle)
-                    QBCore.Functions.Notify(Lang:t("nozzle_cannot_reach"), 'error')
-                    if Config.PumpHose == true then
-                        if Config.FuelDebug then print("Removing ELECTRIC Rope.") end
-                        RopeUnloadTextures()
-                        DeleteRope(Rope)
+
+        local grabbedCoords = GetEntityCoords(ped)
+        
+        -- Improved Location Detection Fallback
+        if not CurrentLocation or CurrentLocation == 0 then
+            local closestDist = 15.0
+            for i = 1, #Config.GasStations do
+                local station = Config.GasStations[i]
+                if station and station.electricchargercoords then
+                    local charCoords = type(station.electricchargercoords) == 'string' and json.decode(station.electricchargercoords) or station.electricchargercoords
+                    if charCoords and charCoords.x then
+                        local dist = #(grabbedCoords - vector3(charCoords.x, charCoords.y, charCoords.z))
+                        if dist < closestDist then
+                            closestDist = dist
+                            CurrentLocation = i
+                            if Config.FuelDebug then print("[CDN-FUEL] Electric Station fallback detected: " .. i) end
+                        end
                     end
                 end
-                Wait(2500)
             end
-        end)
-    end)    
+        end
+
+        local function StartGrabbing()
+            LoadAnimDict("anim@am_hold_up@male")
+            TaskPlayAnim(ped, "anim@am_hold_up@male", "shoplift_high", 2.0, 8.0, -1, 50, 0, 0, 0, 0)
+            TriggerServerEvent("InteractSound_SV:PlayOnSource", "pickupnozzle", 0.4)
+            Wait(300)
+            StopAnimTask(ped, "anim@am_hold_up@male", "shoplift_high", 1.0)
+            ElectricNozzle = CreateObject(joaat(Config.ElectricNozzleModel), 1.0, 1.0, 1.0, true, true, false)
+            local lefthand = GetPedBoneIndex(ped, Config.ElectricNozzleAttachment.bone)
+            local pos = Config.ElectricNozzleAttachment.pos
+            local rot = Config.ElectricNozzleAttachment.rot
+            AttachEntityToEntity(ElectricNozzle, ped, lefthand, pos.x, pos.y, pos.z, rot.x, rot.y, rot.z, 0, 1, 0, 1, 0, 1)
+            local grabbedelectricnozzlecoords = GetEntityCoords(ped)
+            HoldingElectricNozzle = true
+            if Config.PumpHose == true then
+                local pumpCoords, pump = GetClosestPump(grabbedelectricnozzlecoords, true)
+                RopeLoadTextures()
+                while not RopeAreTexturesLoaded() do
+                    Wait(0)
+                    RopeLoadTextures()
+                end
+                while not pump do
+                    Wait(0)
+                end
+                Rope = AddRope(pumpCoords.x, pumpCoords.y, pumpCoords.z, 0.0, 0.0, 0.0, 3.0, Config.RopeType['electric'], 1000.0, 0.0, 1.0, false, false, false, 1.0, true)
+                while not Rope do
+                    Wait(0)
+                end
+                ActivatePhysics(Rope)
+                Wait(100)
+                local nozzlePos = GetEntityCoords(ElectricNozzle)
+                nozzlePos = GetOffsetFromEntityInWorldCoords(ElectricNozzle, -0.005, 0.185, -0.05)
+                
+                -- Electric Rope Offset Logic
+                local ropeOffset = Config.ElectricRopeOffset or vec3(0.0, 0.0, 1.76)
+                local attachCoords = GetOffsetFromEntityInWorldCoords(pump, ropeOffset.x, ropeOffset.y, ropeOffset.z)
+                
+                AttachEntitiesToRope(Rope, pump, ElectricNozzle, attachCoords.x, attachCoords.y, attachCoords.z, nozzlePos.x, nozzlePos.y, nozzlePos.z, 5.0, false, false, nil, nil)
+            end
+            CreateThread(function()
+                while HoldingElectricNozzle do
+                    local currentcoords = GetEntityCoords(ped)
+                    local dist = #(grabbedelectricnozzlecoords - currentcoords)
+                    if not TargetCreated then if Config.FuelTargetExport then exports[Config.TargetResource]:AllowRefuel(true, true) end end
+                    TargetCreated = true
+                    if dist > 7.5 then
+                        if TargetCreated then if Config.FuelTargetExport then exports[Config.TargetResource]:AllowRefuel(false, true) end end
+                        HoldingElectricNozzle = false
+                        DeleteObject(ElectricNozzle)
+                        QBCore.Functions.Notify(Lang:t("nozzle_cannot_reach"), 'error')
+                        if Config.PumpHose == true then
+                            RopeUnloadTextures()
+                            DeleteRope(Rope)
+                        end
+                    end
+                    Wait(2500)
+                end
+            end)
+        end
+
+        -- Verify Station Status before allowing grab
+        if CurrentLocation and CurrentLocation ~= 0 then
+            QBCore.Functions.TriggerCallback('cdn-fuel:server:electric:getStatus', function(status)
+                if status == 0 or status == false then
+                    QBCore.Functions.Notify("Este carregador está desativado por falta de pagamento do proprietário.", "error")
+                else
+                    StartGrabbing()
+                end
+            end, CurrentLocation)
+        else
+            StartGrabbing()
+        end
+    end)
 
     RegisterNetEvent('cdn-fuel:client:electric:RefuelMenu', function()
         if Config.RenewedPhonePayment then
@@ -586,7 +657,7 @@ if Config.ElectricVehicleCharging then
                 if QBCore.Functions.GetPlayerData().money['bank'] <= (GlobalTax(amount) + amount) then
                     QBCore.Functions.Notify(Lang:t("not_enough_money_in_bank"), "error")
                 else
-                    TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "bank", FuelPrice, true)
+                    TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "bank", FuelPrice, true, nil, CurrentLocation)
                     RefuelPossible = true
                     RefuelPossibleAmount = amount
                     RefuelPurchaseType = "bank"
@@ -596,44 +667,16 @@ if Config.ElectricVehicleCharging then
         end)
     end
 
-    -- Threads
-    CreateThread(function()
-            local chargerHash = joaat(Config.ElectricChargerModel)
-            RequestModel(chargerHash)
-            while not HasModelLoaded(chargerHash) do
-                Wait(50)
-            end
-
-            if Config.FuelDebug then
-                print("Electric Charger Model Loaded!")
-            end
-
-            for i = 1, #Config.GasStations do
-                if Config.GasStations[i].electricchargercoords ~= nil then
-                    if Config.FuelDebug then print(i) end
-                    local heading = Config.GasStations[i].electricchargercoords[4]
-                    Config.GasStations[i].electriccharger = CreateObject(joaat(Config.ElectricChargerModel), Config.GasStations[i].electricchargercoords.x, Config.GasStations[i].electricchargercoords.y, Config.GasStations[i].electricchargercoords.z, false, true, true)
-                    if Config.FuelDebug then print("Created Electric Charger @ Location #"..i) end
-                    SetEntityHeading(Config.GasStations[i].electriccharger, heading)
-                    FreezeEntityPosition(Config.GasStations[i].electriccharger, 1)
-                end	
-            end
-        end)
+    -- Threads (Legacy spawning removed, now handled dynamically in station_cl.lua)
 
     -- Resource Stop
-
     AddEventHandler('onResourceStop', function(resource)
         if resource == GetCurrentResourceName() then
-            for i = 1, #Config.GasStations do
-                if Config.GasStations[i].electricchargercoords ~= nil then
-                    DeleteEntity(Config.GasStations[i].electriccharger)
-                    if IsHoldingElectricNozzle() then DeleteEntity(ElectricNozzle) end
-                end	
-            end
+            if IsHoldingElectricNozzle() then DeleteObject(ElectricNozzle) end
 
             if Config.PumpHose then
                 RopeUnloadTextures()
-                DeleteObject(Rope)
+                if Rope then DeleteRope(Rope) end
             end
         end
     end)

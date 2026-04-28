@@ -14,6 +14,7 @@ local props = {
 	"prop_gas_pump_old2",
 	"prop_gas_pump_old3",
 	"denis3d_prop_gas_pump", -- Gabz Ballas Gas Station Pump.
+	"prop_gas_tank_02a",    -- Aviation Tank
 }
 local refueling = false
 local GasStationBlips = {} -- Used for managing blips on the client, so labels can be updated.
@@ -25,6 +26,10 @@ ReserveLevels = 0
 local lastVehicle = nil
 local lastBlacklisted = false
 local lastVehicleName = ""
+local GroundJerryCanObj = nil
+local PendingJerryCanData = nil
+local PendingRefuelAmount = nil
+local PendingFuelPrice = nil
 
 -- Localize Natives
 local PlayerPedId = PlayerPedId
@@ -58,6 +63,45 @@ if Config.FuelDebug then
 	end, false)
 end
 
+-- Global Gas Pump Visual Debug
+if Config.FuelDebug then
+	CreateThread(function()
+		while true do
+			local sleep = 1500
+			local ped = PlayerPedId()
+			local coords = GetEntityCoords(ped)
+			local pumpCoords, pumpEntity = GetClosestPump(coords)
+
+			if pumpEntity and pumpEntity ~= 0 then
+				local dist = #(coords - pumpCoords)
+				if dist < 10.0 then
+					sleep = 0
+					local mHash = GetEntityModel(pumpEntity)
+					local rOffset = Config.PumpRopeOffsets["default"]
+					local fModel = "default"
+					for mName, off in pairs(Config.PumpRopeOffsets) do
+						if joaat(mName) == mHash then
+							rOffset = off
+							fModel = mName
+							break
+						end
+					end
+
+					if fModel ~= "default" then
+						local worldCoords = GetOffsetFromEntityInWorldCoords(pumpEntity, rOffset.x, rOffset.y, rOffset.z)
+						local debugColor = HexToRGB(Config.DebugColor or "#FF00FF")
+						DrawMarker(28, worldCoords.x, worldCoords.y, worldCoords.z, 0, 0, 0, 0, 0, 0, 0.1, 0.1, 0.1, debugColor.r, debugColor.g, debugColor.b, 200, false, false, 2, false, nil, nil, false)
+					end
+					
+					-- Optional: Print only once or every few seconds to not spam F8
+					-- print("[CDN-FUEL DEBUG] Looking at Pump Model: "..fModel) 
+				end
+			end
+			Wait(sleep)
+		end
+	end)
+end
+
 -- Functions
 
 function GetClosestPump(coords, isElectric)
@@ -65,9 +109,6 @@ function GetClosestPump(coords, isElectric)
 		local electricPump = nil
 		electricPump = GetClosestObjectOfType(coords.x, coords.y, coords.z, 3.0, joaat(Config.ElectricChargerModel), true, true, true)
 		local pumpCoords = GetEntityCoords(electricPump)
-		if Config.FuelDebug then
-			print(electricPump, pumpCoords)
-		end
 		return pumpCoords, electricPump
 	else
 		local pump = nil
@@ -76,7 +117,6 @@ function GetClosestPump(coords, isElectric)
 			local currentPumpModel = props[i]
 			pump = GetClosestObjectOfType(coords.x, coords.y, coords.z, 3.0, joaat(currentPumpModel), true, true, true)
 			pumpCoords = GetEntityCoords(pump)
-			if Config.FuelDebug then print("Gas Pump: ".. pump,  "Pump Coords: "..pumpCoords) end
 			if pump ~= 0 then break end
 		end
 		return pumpCoords, pump
@@ -423,7 +463,7 @@ if Config.RenewedPhonePayment then
 			if QBCore.Functions.GetPlayerData().money['bank'] <= total then
 				QBCore.Functions.Notify(Lang:t("not_enough_money"), "error")
 			else
-				TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "bank", FuelPrice, false, CachedFuelPrice)
+				TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "bank", FuelPrice, true, nil, CurrentLocation)
 				RefuelPossible = true
 				RefuelPossibleAmount = amount
 				RefuelCancelledFuelCost = FuelPrice
@@ -573,24 +613,68 @@ RegisterNetEvent('cdn-fuel:client:grabnozzle', function()
             local nozzlePos = GetEntityCoords(fuelnozzle)
             if Config.FuelDebug then print("NOZZLE POS ".. nozzlePos) end
             nozzlePos = GetOffsetFromEntityInWorldCoords(fuelnozzle, 0.0, -0.033, -0.195)
-            local PumpHeightAdd = nil
+            
+            -- Per-Model Rope Offset Logic
+            local modelHash = GetEntityModel(pump)
+            local ropeOffset = Config.PumpRopeOffsets["default"]
+            local foundModel = "default"
+
+            -- Check Aviation Offsets First
+            for modelName, data in pairs(Config.AviationPumpOffsets) do
+                if joaat(modelName) == modelHash then
+                    ropeOffset = data.ropeOffset or data.rope
+                    foundModel = "aviation:"..modelName
+                    break
+                end
+            end
+
+            -- Check Maritime Platform Offsets
+            if joaat(Config.MaritimePlatform.Model) == modelHash then
+                local ped = PlayerPedId()
+                local pedCoords = GetEntityCoords(ped)
+                local closestDist = 1000.0
+                
+                for _, pumpDef in ipairs(Config.MaritimePlatform.PumpOffsets) do
+                    local absPos = GetOffsetFromEntityInWorldCoords(pump, pumpDef.rope.x, pumpDef.rope.y, pumpDef.rope.z)
+                    local dist = #(pedCoords - absPos)
+                    if dist < closestDist then
+                        closestDist = dist
+                        ropeOffset = pumpDef.rope
+                    end
+                end
+                foundModel = "boat_platform"
+            end
+
+            -- If not an aviation pump, check standard pump offsets
+            if foundModel == "default" then
+                for modelName, offset in pairs(Config.PumpRopeOffsets) do
+                    if joaat(modelName) == modelHash then
+                        ropeOffset = offset
+                        foundModel = modelName
+                        break
+                    end
+                end
+            end
+
             if Config.FuelDebug then
-                print("Grabbing Hose @ Location: #"..CurrentLocation)
-                if Config.GasStations[CurrentLocation].pumpheightadd ~= nil then
+                print("[CDN-FUEL] Pump Model Hash: "..modelHash.." | Detected Model Name: "..foundModel)
+            end
+
+            local PumpHeightAdd = ropeOffset.z
+            
+            -- Priority: Model-specific Offset wins. Only check station override if using default.
+            if Config.GasStations[CurrentLocation] and Config.GasStations[CurrentLocation].pumpheightadd ~= nil then
+                if ropeOffset == Config.PumpRopeOffsets["default"] then
                     PumpHeightAdd = Config.GasStations[CurrentLocation].pumpheightadd
-                    print("Pump Height Add: "..Config.GasStations[CurrentLocation].pumpheightadd)
                 end
             end
-            if PumpHeightAdd == nil then
-                PumpHeightAdd = 2.1
-                if Config.FuelDebug then
-                    print("PumpHeightAdd was not configured for location: #"..CurrentLocation.." so, we are defaulting to 2.0!")
-                end
-            end
-            AttachEntitiesToRope(Rope, pump, fuelnozzle, pumpCoords.x, pumpCoords.y, pumpCoords.z + PumpHeightAdd, nozzlePos.x, nozzlePos.y, nozzlePos.z, length, false, false, nil, nil)
+            
+            local attachCoords = GetOffsetFromEntityInWorldCoords(pump, ropeOffset.x, ropeOffset.y, PumpHeightAdd)
+            AttachEntitiesToRope(Rope, pump, fuelnozzle, attachCoords.x, attachCoords.y, attachCoords.z, nozzlePos.x, nozzlePos.y, nozzlePos.z, length, false, false, nil, nil)
+            
             if Config.FuelDebug then
                 print("Hose Properties:")
-                print(Rope, pump, fuelnozzle, pumpCoords.x, pumpCoords.y, pumpCoords.z, nozzlePos.x, nozzlePos.y, nozzlePos.z, length)
+                print(Rope, pump, fuelnozzle, attachCoords.x, attachCoords.y, attachCoords.z, nozzlePos.x, nozzlePos.y, nozzlePos.z, length)
                 SetEntityDrawOutline(fuelnozzle --[[ Entity ]], true --[[ boolean ]])
             end
         end
@@ -713,13 +797,18 @@ RegisterNetEvent('cdn-fuel:client:FinalMenu', function(purchasetype)
 	local finalfuel
 	if curfuel < 10 then finalfuel = string.sub(curfuel, 1, 1) else finalfuel = string.sub(curfuel, 1, 2) end
 	local maxfuel = (100 - finalfuel - 1)
-	if Config.AirAndWaterVehicleFueling['enabled'] then
+	if Config.AirAndWaterVehicleFueling['enabled'] or Config.AviationFuelEnabled then
 		local vehClass = GetVehicleClass(vehicle)
 		if vehClass == 14 then
 			FuelPrice = Config.AirAndWaterVehicleFueling['water_fuel_price']
 			RefuelingType = 'special'
 		elseif vehClass == 15 or vehClass == 16 then
-			FuelPrice = Config.AirAndWaterVehicleFueling['air_fuel_price']
+            -- Use Aviation Specific Pricing if enabled
+            if Config.AviationFuelEnabled then
+                FuelPrice = Config.AviationCostMultiplier
+            else
+			    FuelPrice = Config.AirAndWaterVehicleFueling['air_fuel_price']
+            end
 			RefuelingType = 'special'
 		end
 	end
@@ -887,7 +976,7 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 	else
 		FuelPrice = (1 * Config.CostMultiplier)
 	end
-	if not holdingnozzle and RefuelingType == nil then return end
+	if not holdingnozzle and RefuelingType == nil and not data.isAirSea then return end
 	amount = tonumber(amount)
 	if amount < 1 then return end
     
@@ -1030,20 +1119,6 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 							TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
 							CachedFuelPrice = nil
 						end
-						if RefuelingType == nil then
-							if Config.PlayerOwnedGasStationsEnabled and not Config.UnlimitedFuel then
-								TriggerServerEvent('cdn-fuel:station:server:updatereserves', "remove", finalrefuelamount, (ReserveLevels or 0), CurrentLocation)
-								if CachedFuelPrice ~= nil then
-									if Config.FuelDebug then
-										print("We have a cached price: $"..CachedFuelPrice..", we will credit this to the gas station.")
-									end
-									TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", finalrefuelamount, StationBalance, CurrentLocation, CachedFuelPrice)
-									CachedFuelPrice = nil
-								else
-									TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", finalrefuelamount, StationBalance, CurrentLocation, FuelPrice)
-								end
-							end
-						end
 						local curfuel = GetFuel(vehicle)
 						local finalfuel = (curfuel + Refuelamount)
 						if finalfuel >= 98 and finalfuel < 100 then
@@ -1078,33 +1153,9 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 					if purchasetype == "cash" then
 						TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
 					elseif purchasetype == "bank" then
-						if not Config.RenewedPhonePayment or purchasetype == "cash" then
+						if not Config.RenewedPhonePayment then
 							TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
 						end
-					end
-					local curfuel = GetFuel(vehicle)
-					local finalfuel = (curfuel + fuelamount)
-					if finalfuel > 99 and finalfuel < 100 then
-						SetFuel(vehicle, 100)
-					else
-						SetFuel(vehicle, finalfuel)
-					end
-					if RefuelingType == nil then
-						if Config.PlayerOwnedGasStationsEnabled and not Config.UnlimitedFuel then
-							TriggerServerEvent('cdn-fuel:station:server:updatereserves', "remove", fuelamount, (ReserveLevels or 0), CurrentLocation)
-							if CachedFuelPrice ~= nil then
-								if Config.FuelDebug then
-									print("We have a cached price: $"..CachedFuelPrice..", we will credit this to the gas station.")
-								end
-								TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", fuelamount, StationBalance, CurrentLocation, CachedFuelPrice)
-								CachedFuelPrice = nil
-							else
-								TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", fuelamount, StationBalance, CurrentLocation, FuelPrice)
-							end
-						else
-							if Config.FuelDebug then print("Config.PlayerOwnedGasStationsEnabled == false or Config.UnlimitedFuel == true, this means reserves will not be changed.") end
-						end
-						if Config.FuelDebug then print("Config.PlayerOwnedGasStationsEnabled == false or Config.UnlimitedFuel == true, this means reserves will not be changed.") end
 					end
 					StopAnimTask(ped, Config.RefuelAnimationDictionary, Config.RefuelAnimation, 3.0, 3.0, -1, 2, 0, 0, 0, 0)
 					TriggerServerEvent("InteractSound_SV:PlayOnSource", "fuelstop", 0.4)
@@ -1129,29 +1180,6 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 					refueling = false
 					if not Config.RenewedPhonePayment or purchasetype == "cash" then
 						TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
-					end
-					local curfuel = GetFuel(vehicle)
-					local finalfuel = (curfuel + fuelamount)
-					if finalfuel > 99 and finalfuel < 100 then
-						SetFuel(vehicle, 100)
-					else
-						SetFuel(vehicle, finalfuel)
-					end
-					if RefuelingType == nil then
-						if Config.PlayerOwnedGasStationsEnabled and not Config.UnlimitedFuel then
-							TriggerServerEvent('cdn-fuel:station:server:updatereserves', "remove", fuelamount, (ReserveLevels or 0), CurrentLocation)
-							if CachedFuelPrice ~= nil then
-								if Config.FuelDebug then
-									print("We have a cached price: $"..CachedFuelPrice..", we will credit this to the gas station.")
-								end
-								TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", fuelamount, StationBalance, CurrentLocation, CachedFuelPrice)
-								CachedFuelPrice = nil
-							else
-								TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", fuelamount, StationBalance, CurrentLocation, FuelPrice)
-							end
-						else
-							if Config.FuelDebug then print("Config.PlayerOwnedGasStationsEnabled == false or Config.UnlimitedFuel == true, this means reserves will not be changed.") end
-						end
 					end
 					StopAnimTask(ped, Config.RefuelAnimationDictionary, Config.RefuelAnimation, 3.0, 3.0, -1, 2, 0, 0, 0, 0)
 					TriggerServerEvent("InteractSound_SV:PlayOnSource", "fuelstop", 0.4)
@@ -1181,6 +1209,20 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelmenu', function(itemData)
 	local vehiclecoords = GetEntityCoords(vehicle)
 	local pedcoords = GetEntityCoords(PlayerPedId())
 	if GetVehicleBodyHealth(vehicle) < 100 then QBCore.Functions.Notify(Lang:t("vehicle_is_damaged"), 'error') return end
+
+	local class = GetVehicleClass(vehicle)
+	local isAviationVeh = Config.AviationVehicleClasses[class] or false
+	local isAviationCan = itemData.name == 'aviation_jerrycan'
+
+	if isAviationVeh and not isAviationCan then
+		QBCore.Functions.Notify("Aeronaves precisam de combustível especial (Jet A-1)!", "error")
+		return
+	end
+	if not isAviationVeh and isAviationCan then
+		QBCore.Functions.Notify("Esse combustível de aviação vai destruir o motor deste veículo!", "error")
+		return
+	end
+
 	local jerrycanamount
 	if Config.Ox.Inventory then
 		jerrycanamount = tonumber(itemData.metadata.cdn_fuel)
@@ -1188,80 +1230,23 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelmenu', function(itemData)
 		jerrycanamount = itemData.info.gasamount
 	end
 	
-    -- Logic: If holding nozzle (at pump), show Refill Can menu.
-    -- If NOT holding nozzle and near vehicle, go STRAIGHT to Refuel Vehicle NUI.
-    
     if holdingnozzle then
-        if Config.Ox.Menu then
-			local fulltank
-			if jerrycanamount == Config.JerryCanCap then fulltank = true
-				GasString = Lang:t("menu_jerry_can_footer_full_gas")
-			else fulltank = false
-				GasString = Lang:t("menu_jerry_can_footer_refuel_gas")
-			end
-
-			lib.registerContext({
-				id = 'cdnrefuelmenu',
-				title = Lang:t("menu_header_jerry_can"),
-				options = {
-					{
-						title = Lang:t("menu_header_refuel_jerry_can"),
-						event = 'cdn-fuel:jerrycan:refueljerrycan',
-						args = {itemData = itemData},
-						disabled = fulltank
-					},
-				},
-			})
-			lib.showContext('cdnrefuelmenu')
-        else
-			local fulltank
-			if jerrycanamount == Config.JerryCanCap then
-				fulltank = true
-				GasString = Lang:t("menu_jerry_can_footer_full_gas")
-			else
-				fulltank = false
-				GasString = Lang:t("menu_jerry_can_footer_refuel_gas")
-			end
-			exports['qb-menu']:openMenu({
-				{
-					header = Lang:t("menu_header_jerry_can"),
-					isMenuHeader = true,
-				},
-				{
-					header = Lang:t("menu_header_refuel_jerry_can"),
-					txt = GasString,
-					icon = "fas fa-gas-pump",
-					params = {
-						event = "cdn-fuel:jerrycan:refueljerrycan",
-						args = {
-							itemData = itemData,
-						},
-					},
-					disabled = fulltank,
-				},
-				{
-					header = Lang:t("menu_header_close"),
-					txt = Lang:t("menu_jerry_can_close"),
-					icon = "fas fa-times-circle",
-					params = {
-						event = "qb-menu:closeMenu",
-					}
-				},
-			})
-        end
-    else
-        -- Not holding nozzle - Check for vehicle refuel intent
-        if #(vehiclecoords - pedcoords) > 2.5 then return end
-        
-        if jerrycanamount < 1 then 
-            QBCore.Functions.Notify(Lang:t("menu_jerry_can_footer_no_gas"), 'error') 
-            return 
-        end
-        
-        -- Direct Trigger to NUI event
-        TriggerEvent('cdn-fuel:jerrycan:refuelvehicle', {itemData = itemData})
+        QBCore.Functions.Notify("Use a interação na bomba de combustível para reabastecer seus galões!", "info")
+        return
     end
+
+    -- Not holding nozzle - Check for vehicle refuel intent
+    if #(vehiclecoords - pedcoords) > 2.5 then return end
+    
+    if jerrycanamount < 1 then 
+        QBCore.Functions.Notify(Lang:t("menu_jerry_can_footer_no_gas"), 'error') 
+        return 
+    end
+    
+    -- Direct Trigger to NUI event
+    TriggerEvent('cdn-fuel:jerrycan:refuelvehicle', {itemData = itemData})
 end)
+local pendingJerryCanIsAviation = false
 
 RegisterNetEvent('cdn-fuel:client:jerrycanfinalmenu', function(purchasetype, amount)
 	Moneyamount = nil
@@ -1270,9 +1255,13 @@ RegisterNetEvent('cdn-fuel:client:jerrycanfinalmenu', function(purchasetype, amo
 	elseif purchasetype == 'cash' then
 		Moneyamount = QBCore.Functions.GetPlayerData().money['cash']
 	end
-    local cost = (Config.JerryCanPrice + GlobalTax(Config.JerryCanPrice)) * (amount or 1)
+    
+    local isAviation = pendingJerryCanIsAviation or false
+    local basePrice = isAviation and Config.AviationJerryCanPrice or Config.JerryCanPrice
+    local cost = (basePrice + GlobalTax(basePrice)) * (amount or 1)
+    
     if Moneyamount >= math.ceil(cost) then
-		TriggerServerEvent('cdn-fuel:server:purchase:jerrycan', purchasetype, amount, CurrentLocation)
+		TriggerServerEvent('cdn-fuel:server:purchase:jerrycan', purchasetype, amount, CurrentLocation, isAviation)
 	else
 		if purchasetype == 'bank' then QBCore.Functions.Notify(Lang:t("not_enough_money_in_bank"), 'error') end
 		if purchasetype == "cash" then QBCore.Functions.Notify(Lang:t("not_enough_money_in_cash"), 'error') end
@@ -1289,17 +1278,40 @@ RegisterNetEvent('cdn-fuel:client:purchasejerrycan', function()
         stationLabel = Config.GasStations[CurrentLocation].label
         stationObject = Config.GasStations[CurrentLocation]
     else
-        -- Fallback: Find closest station
+        -- Fallback: Find closest station by checking pumps or zone center
         local ped = PlayerPedId()
         local coords = GetEntityCoords(ped)
         local closestDist = 100.0 -- Increased range for safety
         
         for k, v in pairs(Config.GasStations) do
-            local stationCoords = vector3(v.pedcoords.x, v.pedcoords.y, v.pedcoords.z)
-            local dist = #(coords - stationCoords)
-            if dist < closestDist then
-                closestDist = dist
-                stationObject = v
+            local stationCoords = nil
+            
+            -- Try to use the closest fuel pump
+            if v.fuelpumpcoords and #v.fuelpumpcoords > 0 then
+                for _, pump in ipairs(v.fuelpumpcoords) do
+                    local pCoords = vector3(pump.x, pump.y, pump.z)
+                    local dist = #(coords - pCoords)
+                    if dist < closestDist then
+                        closestDist = dist
+                        stationObject = v
+                    end
+                end
+            elseif v.pedcoords then
+                -- Fallback to ped coords
+                stationCoords = vector3(v.pedcoords.x, v.pedcoords.y, v.pedcoords.z)
+                local dist = #(coords - stationCoords)
+                if dist < closestDist then
+                    closestDist = dist
+                    stationObject = v
+                end
+            elseif v.zones and #v.zones > 0 then
+                -- Fallback to first zone point
+                stationCoords = vector3(v.zones[1].x, v.zones[1].y, coords.z)
+                local dist = #(coords - stationCoords)
+                if dist < closestDist then
+                    closestDist = dist
+                    stationObject = v
+                end
             end
         end
         
@@ -1308,13 +1320,16 @@ RegisterNetEvent('cdn-fuel:client:purchasejerrycan', function()
         end
     end
 
+    pendingJerryCanIsAviation = (stationObject and stationObject.type == 'air')
+    local basePrice = pendingJerryCanIsAviation and Config.AviationJerryCanPrice or Config.JerryCanPrice
+
     SetNuiFocus(true, true)
     SendNUIMessage({
         action = "open",
         data = {
             maxFuel = 1, -- Unused for jerry can but kept for structure
             currentFuel = 0,
-            price = Config.JerryCanPrice,
+            price = basePrice,
             type = 'jerrycan',
             tax = Config.GlobalTax,
             stationName = stationLabel,
@@ -1347,11 +1362,13 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelvehicle', function(data)
 		NotElectric = true
 	end
 	Wait(50)
+	local itemCap = isAviationCan and Config.AviationJerryCanCap or Config.JerryCanCap
+
 	if NotElectric then
-		if maxvehrefuel < Config.JerryCanCap then
+		if maxvehrefuel < itemCap then
 			maxvehrefuel = maxvehrefuel
 		else
-			maxvehrefuel = Config.JerryCanCap
+			maxvehrefuel = itemCap
 		end
 		if maxvehrefuel >= jerrycanfuelamount then maxvehrefuel = jerrycanfuelamount elseif maxvehrefuel < jerrycanfuelamount then maxvehrefuel = maxvehrefuel end
 		
@@ -1371,7 +1388,7 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelvehicle', function(data)
                     price = 0,
                     jerryCanData = {
                         fuel = jerrycanfuelamount,
-                        cap = Config.JerryCanCap,
+                        cap = itemCap,
                         itemData = itemData
                     }
                 }
@@ -1441,6 +1458,108 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelvehicle', function(data)
 	end
 end)
 
+RegisterNetEvent('cdn-fuel:client:jerrycan:refillmenu', function()
+    local ped = PlayerPedId()
+    local coords = GetEntityCoords(ped)
+    local isAviationStation = false
+    local stationLabel = nil
+    local stationObject = nil
+
+    if CurrentLocation and Config.GasStations[CurrentLocation] then
+        stationLabel = Config.GasStations[CurrentLocation].label
+        stationObject = Config.GasStations[CurrentLocation]
+    else
+        local closestDist = 100.0
+        for k, v in pairs(Config.GasStations) do
+            local stationCoords = nil
+            if v.fuelpumpcoords and #v.fuelpumpcoords > 0 then
+                for _, pump in ipairs(v.fuelpumpcoords) do
+                    local pCoords = vector3(pump.x, pump.y, pump.z)
+                    local dist = #(coords - pCoords)
+                    if dist < closestDist then
+                        closestDist = dist
+                        stationObject = v
+                    end
+                end
+            elseif v.pedcoords then
+                stationCoords = vector3(v.pedcoords.x, v.pedcoords.y, v.pedcoords.z)
+                local dist = #(coords - stationCoords)
+                if dist < closestDist then
+                    closestDist = dist
+                    stationObject = v
+                end
+            elseif v.zones and #v.zones > 0 then
+                stationCoords = vector3(v.zones[1].x, v.zones[1].y, coords.z)
+                local dist = #(coords - stationCoords)
+                if dist < closestDist then
+                    closestDist = dist
+                    stationObject = v
+                end
+            end
+        end
+    end
+
+    isAviationStation = (stationObject and stationObject.type == 'air')
+    local allowedItem = isAviationStation and 'aviation_jerrycan' or 'jerrycan'
+    local allowedCap = isAviationStation and Config.AviationJerryCanCap or Config.JerryCanCap
+
+    local jerryCans = {}
+    if Config.Ox.Inventory then
+        local items = exports.ox_inventory:Search('slots', allowedItem)
+        if items then
+            for _, item in pairs(items) do
+                table.insert(jerryCans, {
+                    fuel = tonumber(item.metadata.cdn_fuel) or 0,
+                    cap = allowedCap,
+                    itemData = item,
+                    name = item.label or (isAviationStation and "Galão de Aviação" or "Galão de Combustível")
+                })
+            end
+        end
+    else
+        local items = QBCore.Functions.GetPlayerData().items
+        if items then
+            for slot, item in pairs(items) do
+                if item.name == allowedItem then
+                    table.insert(jerryCans, {
+                        fuel = tonumber(item.info.gasamount) or 0,
+                        cap = allowedCap,
+                        itemData = item,
+                        name = item.label or (isAviationStation and "Galão de Aviação" or "Galão de Combustível")
+                    })
+                end
+            end
+        end
+    end
+
+    if #jerryCans == 0 then
+        QBCore.Functions.Notify("Você não tem nenhum galão!", "error")
+        return
+    end
+
+    -- Update FuelPrice if owned
+    if Config.PlayerOwnedGasStationsEnabled then
+        FetchStationInfo("fuelprice")
+        Wait(100)
+    else
+        FuelPrice = Config.CostMultiplier
+    end
+
+    SendNUIMessage({
+        action = "open",
+        data = {
+            type = "jerrycanRefill",
+            jerryCans = jerryCans,
+            currentFuel = jerryCans[1].fuel, -- For initial UI state
+            maxFuel = jerryCans[1].cap - jerryCans[1].fuel,
+            price = FuelPrice,
+            tax = Config.GlobalTax,
+            stationName = Config.GasStations[CurrentLocation].label,
+        }
+    })
+    SetNuiFocus(true, true)
+end)
+
 RegisterNetEvent('cdn-fuel:jerrycan:refueljerrycan', function(data)
 	FetchStationInfo('all')
 	Wait(100)
@@ -1450,6 +1569,10 @@ RegisterNetEvent('cdn-fuel:jerrycan:refueljerrycan', function(data)
 		FuelPrice = (1 * Config.CostMultiplier)
 	end
 	local itemData = data.itemData
+	if not itemData then
+		if Config.FuelDebug then print("[DEBUG] refueljerrycan triggered with nil itemData") end
+		return 
+	end
 	local jerrycanfuelamount
 	if Config.Ox.Inventory then
 		jerrycanfuelamount = tonumber(itemData.metadata.cdn_fuel)
@@ -1459,139 +1582,187 @@ RegisterNetEvent('cdn-fuel:jerrycan:refueljerrycan', function(data)
 
 	local ped = PlayerPedId()
 
-	if Config.Ox.Input then
-		local JerryCanMaxRefuel = (Config.JerryCanCap - jerrycanfuelamount)
-		local refuel = lib.inputDialog(Lang:t("input_select_refuel_header"), {Lang:t("input_max_fuel_footer_1") .. JerryCanMaxRefuel .. Lang:t("input_max_fuel_footer_2")})
-		if not refuel then return end
-		local refuelAmount = tonumber(refuel[1])
-		if refuel then
-			if tonumber(refuelAmount) == 0 then QBCore.Functions.Notify(Lang:t("more_than_zero"), 'error') return elseif tonumber(refuelAmount) < 0 then QBCore.Functions.Notify(Lang:t("more_than_zero"), 'error') return end
-			if tonumber(refuelAmount) + tonumber(jerrycanfuelamount) > Config.JerryCanCap then QBCore.Functions.Notify(Lang:t("jerry_can_not_fit_fuel"), 'error') return end
-			if tonumber(refuelAmount) > Config.JerryCanCap then QBCore.Functions.Notify(Lang:t("jerry_can_not_fit_fuel"), 'error') return end
-			local refueltimer = Config.RefuelTime * tonumber(refuelAmount)
-			if tonumber(refuelAmount) < 10 then refueltimer = Config.RefuelTime * 10 end
-			local price = (tonumber(refuelAmount) * FuelPrice) + GlobalTax(tonumber(refuelAmount) * FuelPrice)
-			if not CanAfford(price, "cash") then QBCore.Functions.Notify(Lang:t("not_enough_money_in_cash"), 'error') return end
+    local ItemName = data.itemData.name
+    local itemCap = (ItemName == 'aviation_jerrycan') and Config.AviationJerryCanCap or Config.JerryCanCap
 
-			JerrycanProp = CreateObject(joaat('w_am_jerrycan'), 1.0, 1.0, 1.0, true, true, false)
-			local lefthand = GetPedBoneIndex(ped, 18905)
-			AttachEntityToEntity(JerrycanProp, ped, lefthand, 0.11 --[[Left - Right]] , 0.05--[[Up - Down]], 0.27 --[[Forward - Backward]], -15.0, 170.0, -90.42, 0, 1, 0, 1, 0, 1)
-			SetEntityVisible(fuelnozzle, false, 0)
-			if lib.progressCircle({
-				duration = refueltimer,
-				label = Lang:t("prog_jerry_can_refuel"),
-				position = 'bottom',
-				useWhileDead = false,
-				canCancel = true,
-				disable = {
-					car = true,
-					move = true,
-					combat = true
-				},
-				anim = {
-					dict = Config.JerryCanAnimDict,
-					clip = Config.JerryCanAnim
-				},
-			}) then
-				SetEntityVisible(fuelnozzle, true, 0)
-				DeleteObject(JerrycanProp)
-				StopAnimTask(ped, Config.JerryCanAnimDict, Config.JerryCanAnim, 1.0)
-				QBCore.Functions.Notify(Lang:t("jerry_can_success"), 'success')
-				local srcPlayerData = QBCore.Functions.GetPlayerData()
-				if Config.Ox.Inventory then
-					TriggerServerEvent('cdn-fuel:info', "add", tonumber(refuelAmount), srcPlayerData, itemData)
-				else
-					TriggerServerEvent('cdn-fuel:info', "add", tonumber(refuelAmount), srcPlayerData, itemData)
-				end
+    if jerrycanfuelamount == itemCap then QBCore.Functions.Notify(Lang:t("jerry_can_is_full"), 'error') return end
+    
+    local refuelAmount = data.amount
+	if not refuelAmount then
+        if Config.Ox.Input then
+            local JerryCanMaxRefuel = (itemCap - jerrycanfuelamount)
+            local refuel = lib.inputDialog(Lang:t("input_select_refuel_header"), {Lang:t("input_max_fuel_footer_1") .. JerryCanMaxRefuel .. Lang:t("input_max_fuel_footer_2")})
+            if not refuel then return end
+            refuelAmount = tonumber(refuel[1])
+        else
+            local JerryCanMaxRefuel = (itemCap - jerrycanfuelamount)
+            local refuel = exports['qb-input']:ShowInput({
+                header = Lang:t("input_select_refuel_header"),
+                submitText = Lang:t("input_refuel_jerrycan_submit"),
+                inputs = { {
+                    type = 'number',
+                    isRequired = true,
+                    name = 'amount',
+                    text = Lang:t("input_max_fuel_footer_1") .. JerryCanMaxRefuel .. Lang:t("input_max_fuel_footer_2")
+                } }
+            })
+            if not refuel then return end
+            refuelAmount = tonumber(refuel.amount)
+        end
+    end
 
-				if Config.PlayerOwnedGasStationsEnabled and not Config.UnlimitedFuel then
-					TriggerServerEvent('cdn-fuel:station:server:updatereserves', "remove", tonumber(refuelAmount), (ReserveLevels or 0), CurrentLocation)
-					if CachedFuelPrice ~= nil then
-						TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", tonumber(refuelAmount), StationBalance, CurrentLocation, CachedFuelPrice)
-					else
-						TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", tonumber(refuelAmount), StationBalance, CurrentLocation, FuelPrice)
-					end
-				else
-					if Config.FuelDebug then print("Config.PlayerOwnedGasStationsEnabled == false or Config.UnlimitedFuel == true, this means reserves will not be changed.") end
-				end
-				local total = (tonumber(refuelAmount) * FuelPrice) + GlobalTax(tonumber(refuelAmount) * FuelPrice)
-				TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "cash", FuelPrice)
-			else
-				SetEntityVisible(fuelnozzle, true, 0)
-				DeleteObject(JerrycanProp)
-				StopAnimTask(ped, Config.JerryCanAnimDict, Config.JerryCanAnim, 1.0)
-				QBCore.Functions.Notify(Lang:t("cancelled"), 'error')
-			end
-		end
-	else
-		local JerryCanMaxRefuel = (Config.JerryCanCap - jerrycanfuelamount)
-		local refuel = exports['qb-input']:ShowInput({
-			header = Lang:t("input_select_refuel_header"),
-			submitText = Lang:t("input_refuel_jerrycan_submit"),
-			inputs = { {
-				type = 'number',
-				isRequired = true,
-				name = 'amount',
-				text = Lang:t("input_max_fuel_footer_1") .. JerryCanMaxRefuel .. Lang:t("input_max_fuel_footer_2")
-			} }
-		})
-		if refuel then
-			if tonumber(refuel.amount) == 0 then QBCore.Functions.Notify(Lang:t("more_than_zero"), 'error') return elseif tonumber(refuel.amount) < 0 then QBCore.Functions.Notify(Lang:t("more_than_zero"), 'error') return end
-			if tonumber(refuel.amount) + tonumber(jerrycanfuelamount) > Config.JerryCanCap then QBCore.Functions.Notify(Lang:t("jerry_can_not_fit_fuel"), 'error') return end
-			if tonumber(refuel.amount) > Config.JerryCanCap then QBCore.Functions.Notify(Lang:t("jerry_can_not_fit_fuel"), 'error') return end
-			local refueltimer = Config.RefuelTime * tonumber(refuel.amount)
-			if tonumber(refuel.amount) < 10 then refueltimer = Config.RefuelTime * 10 end
-			local price = (tonumber(refuel.amount) * FuelPrice) + GlobalTax(tonumber(refuel.amount) * FuelPrice)
-			if not CanAfford(price, "cash") then QBCore.Functions.Notify(Lang:t("not_enough_money_in_cash"), 'error') return end
-			JerrycanProp = CreateObject(joaat('w_am_jerrycan'), 1.0, 1.0, 1.0, true, true, false)
-			local lefthand = GetPedBoneIndex(ped, 18905)
-			AttachEntityToEntity(JerrycanProp, ped, lefthand, 0.11 --[[Left - Right]] , 0.05 --[[Up - Down]], 0.27 --[[Forward - Backward]], -15.0, 170.0, -90.42, 0, 1, 0, 1, 0, 1)
-			SetEntityVisible(fuelnozzle, false, 0)
-			QBCore.Functions.Progressbar('refuel_gas', Lang:t("prog_jerry_can_refuel"), refueltimer, false,true, { -- Name | Label | Time | useWhileDead | canCancel
-				disableMovement = true,
-				disableCarMovement = true,
-				disableMouse = false,
-				disableCombat = true,
-			}, {
-				animDict = Config.JerryCanAnimDict,
-				anim = Config.JerryCanAnim,
-				flags = 17,
-			}, {}, {}, function() -- Play When Done
-				SetEntityVisible(fuelnozzle, true, 0)
-				DeleteObject(JerrycanProp)
-				StopAnimTask(ped, Config.JerryCanAnimDict, Config.JerryCanAnim, 1.0)
-				QBCore.Functions.Notify(Lang:t("jerry_can_success"), 'success')
-				local jerryCanData = data.itemData
-				local srcPlayerData = QBCore.Functions.GetPlayerData()
-				local refuelAmount = tonumber(refuel.amount)
-				if Config.Ox.Inventory then
-					TriggerServerEvent('cdn-fuel:info', "add", tonumber(refuelAmount), srcPlayerData, jerryCanData)
-				else
-					TriggerServerEvent('cdn-fuel:info', "add", tonumber(refuelAmount), srcPlayerData, jerryCanData)
-				end
-				if RefuelingType == nil then
-					if Config.PlayerOwnedGasStationsEnabled and not Config.UnlimitedFuel then
-						TriggerServerEvent('cdn-fuel:station:server:updatereserves', "remove", tonumber(refuel.amount), (ReserveLevels or 0), CurrentLocation)
-						if CachedFuelPrice ~= nil then
-							TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", tonumber(refuel.amount), StationBalance, CurrentLocation, CachedFuelPrice)
-						else
-							TriggerServerEvent('cdn-fuel:station:server:updatebalance', "add", tonumber(refuel.amount), StationBalance, CurrentLocation, FuelPrice)
-						end
+    if refuelAmount then
+        if tonumber(refuelAmount) == 0 then QBCore.Functions.Notify(Lang:t("more_than_zero"), 'error') return elseif tonumber(refuelAmount) < 0 then QBCore.Functions.Notify(Lang:t("more_than_zero"), 'error') return end
+        if tonumber(refuelAmount) + tonumber(jerrycanfuelamount) > itemCap then QBCore.Functions.Notify(Lang:t("jerry_can_not_fit_fuel"), 'error') return end
+        if tonumber(refuelAmount) > itemCap then QBCore.Functions.Notify(Lang:t("jerry_can_not_fit_fuel"), 'error') return end
+        
+        local price = (tonumber(refuelAmount) * FuelPrice) + GlobalTax(tonumber(refuelAmount) * FuelPrice)
+        if not CanAfford(price, "cash") then QBCore.Functions.Notify(Lang:t("not_enough_money_in_cash"), 'error') return end
 
-					else
-						if Config.FuelDebug then print("Config.PlayerOwnedGasStationsEnabled == false or Config.UnlimitedFuel == true, this means reserves will not be changed.") end
-					end
-				end
-				local total = (tonumber(refuel.amount) * FuelPrice) + GlobalTax(tonumber(refuel.amount) * FuelPrice)
-				TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "cash", FuelPrice, false, CachedFuelPrice)
-			end, function() -- Play When Cancel
-				SetEntityVisible(fuelnozzle, true, 0)
-				DeleteObject(JerrycanProp)
-				StopAnimTask(ped, Config.JerryCanAnimDict, Config.JerryCanAnim, 1.0)
-				QBCore.Functions.Notify(Lang:t("cancelled"), 'error')
-			end, "jerrycan")
-		end
-	end
+        -- Save Pending Data
+        PendingJerryCanData = itemData
+        PendingRefuelAmount = tonumber(refuelAmount)
+        PendingFuelPrice = FuelPrice
+
+        -- IMMERSIVE PART: Spawn on Ground
+        if GroundJerryCanObj then DeleteObject(GroundJerryCanObj) end
+        
+        local coords = GetOffsetFromEntityInWorldCoords(ped, 0.0, 0.6, -1.0)
+        local model = joaat('prop_jerrycan_01a')
+        RequestModel(model)
+        while not HasModelLoaded(model) do Wait(10) end
+        
+        GroundJerryCanObj = CreateObject(model, coords.x, coords.y, coords.z, true, true, false)
+        PlaceObjectOnGroundProperly(GroundJerryCanObj)
+        FreezeEntityPosition(GroundJerryCanObj, true)
+        SetEntityAsMissionEntity(GroundJerryCanObj, true, true)
+
+        QBCore.Functions.Notify("Galão colocado no chão. Pegue a mangueira e conecte para abastecer!", "info")
+
+        -- Target for Ground Can
+        if Config.Ox.Target then
+            exports.ox_target:addLocalEntity(GroundJerryCanObj, {
+                {
+                    name = 'refill_ground_can',
+                    label = 'Abastecer Galão',
+                    icon = 'fas fa-gas-pump',
+                    canInteract = function()
+                        return holdingnozzle
+                    end,
+                    onSelect = function()
+                        TriggerEvent('cdn-fuel:client:startGroundRefill')
+                    end
+                },
+                {
+                    name = 'pickup_ground_can',
+                    label = 'Pegar Galão',
+                    icon = 'fas fa-hand-holding',
+                    onSelect = function()
+                        DeleteObject(GroundJerryCanObj)
+                        GroundJerryCanObj = nil
+                        QBCore.Functions.Notify("Galão recolhido.", "info")
+                    end
+                }
+            })
+        else
+            exports['qb-target']:AddTargetEntity(GroundJerryCanObj, {
+                options = {
+                    {
+                        icon = "fas fa-gas-pump",
+                        label = "Abastecer Galão",
+                        action = function()
+                            TriggerEvent('cdn-fuel:client:startGroundRefill')
+                        end,
+                        canInteract = function()
+                            return holdingnozzle
+                        end,
+                    },
+                    {
+                        icon = "fas fa-hand-holding",
+                        label = "Pegar Galão",
+                        action = function()
+                            DeleteObject(GroundJerryCanObj)
+                            GroundJerryCanObj = nil
+                            QBCore.Functions.Notify("Galão recolhido.", "info")
+                        end,
+                    },
+                },
+                distance = 2.0
+            })
+        end
+    end
+end)
+
+RegisterNetEvent('cdn-fuel:client:startGroundRefill', function()
+    local ped = PlayerPedId()
+    if not GroundJerryCanObj or not PendingJerryCanData then return end
+    
+    local refueltimer = Config.RefuelTime * PendingRefuelAmount
+    if PendingRefuelAmount < 10 then refueltimer = Config.RefuelTime * 10 end
+
+    -- Animation: Bending down to the can
+    TaskTurnPedToFaceEntity(ped, GroundJerryCanObj, 1000)
+    Wait(1000)
+    
+    local finished = false
+    if Config.Ox.Progress then
+        finished = lib.progressCircle({
+            duration = refueltimer,
+            label = Lang:t("prog_jerry_can_refuel"),
+            position = 'bottom',
+            useWhileDead = false,
+            canCancel = true,
+            disable = {
+                car = true,
+                move = true,
+                combat = true
+            },
+            anim = {
+                dict = "amb@world_human_gardener_plant@male@base",
+                clip = "base"
+            },
+        })
+    else
+        QBCore.Functions.Progressbar('refuel_ground_can', Lang:t("prog_jerry_can_refuel"), refueltimer, false, true, {
+            disableMovement = true,
+            disableCarMovement = true,
+            disableMouse = false,
+            disableCombat = true,
+        }, {
+            animDict = "amb@world_human_gardener_plant@male@base",
+            anim = "base",
+            flags = 1,
+        }, {}, {}, function() -- Done
+            finished = true
+        end, function() -- Cancel
+            finished = false
+        end)
+        
+        local timer = 0
+        while finished == false and timer < refueltimer + 1000 do
+            Wait(100)
+            timer = timer + 100
+        end
+    end
+
+    if finished then
+        QBCore.Functions.Notify(Lang:t("jerry_can_success"), 'success')
+        local srcPlayerData = QBCore.Functions.GetPlayerData()
+        TriggerServerEvent('cdn-fuel:info', "add", PendingRefuelAmount, srcPlayerData, PendingJerryCanData)
+
+        local total = (PendingRefuelAmount * PendingFuelPrice) + GlobalTax(PendingRefuelAmount * PendingFuelPrice)
+        TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "cash", PendingFuelPrice, false, nil, CurrentLocation)
+        
+        -- Cleanup
+        DeleteObject(GroundJerryCanObj)
+        GroundJerryCanObj = nil
+        PendingJerryCanData = nil
+        PendingRefuelAmount = nil
+        StopAnimTask(ped, "amb@world_human_gardener_plant@male@base", "base", 1.0)
+    else
+        QBCore.Functions.Notify(Lang:t("cancelled"), 'error')
+        StopAnimTask(ped, "amb@world_human_gardener_plant@male@base", "base", 1.0)
+    end
 end)
 
 --- Syphoning ---
@@ -2442,8 +2613,15 @@ CreateThread(function()
 				name = 'cdn-fuel:options:1',
 				icon = "fas fa-gas-pump",
 				label = tostring(Lang:t("input_insert_nozzle")),
-				canInteract = function()
+				canInteract = function(entity)
 					if inGasStation and not refueling and holdingnozzle then
+						local currentStation = Config.GasStations[CurrentLocation]
+						if currentStation and currentStation.type == 'air' then
+							local vClass = GetVehicleClass(entity)
+							if not Config.AviationVehicleClasses[vClass] then
+								return false
+							end
+						end
 						return true
 					end
 				end,
@@ -2536,7 +2714,20 @@ CreateThread(function()
 					if HoldingSpecialNozzle and not IsPedInAnyVehicle(PlayerPedId()) then
 						return true
 					end
-				end
+				end,
+			},
+			[6] = {
+				name = "cdn-fuel:modelOptions:option_6",
+				num = 6,
+				type = "client",
+				event = "cdn-fuel:client:jerrycan:refillmenu",
+				icon = "fas fa-fill-drip",
+				label = "Reabastecer Galão",
+				canInteract = function()
+					if not IsPedInAnyVehicle(PlayerPedId()) and inGasStation == true then
+						return true
+					end
+				end,
 			},
 		}
 
@@ -2551,8 +2742,15 @@ CreateThread(function()
 					end,
 					icon = "fas fa-gas-pump",
 					label = Lang:t("input_insert_nozzle"),
-					canInteract = function()
+					canInteract = function(entity)
 						if inGasStation and not refueling and holdingnozzle then
+							local currentStation = Config.GasStations[CurrentLocation]
+							if currentStation and currentStation.type == 'air' then
+								local vClass = GetVehicleClass(entity)
+								if not Config.AviationVehicleClasses[vClass] then
+									return false
+								end
+							end
 							return true
 						end
 					end
@@ -2634,6 +2832,18 @@ CreateThread(function()
 				},
 				{
 					num = 5,
+					type = "client",
+					event = "cdn-fuel:client:jerrycan:refillmenu",
+					icon = "fas fa-fill-drip",
+					label = "Reabastecer Galão",
+					canInteract = function()
+						if not IsPedInAnyVehicle(PlayerPedId()) and inGasStation == true then
+							return true
+						end
+					end,
+				},
+				{
+					num = 6,
 					type = "client",
 					event = "cdn-fuel:client:returnnozzle:special",
 					icon = "fas fa-hand",
@@ -2759,6 +2969,12 @@ RegisterNUICallback('pay', function(data, cb)
             itemData = data.jerryCanData.itemData,
             amount = amount
         })
+    elseif type == 'jerrycanRefill' then
+        if not amount then return end
+        TriggerEvent('cdn-fuel:jerrycan:refueljerrycan', {
+            itemData = data.jerryCanData,
+            amount = amount
+        })
     else
         if not amount or not method then return end
         
@@ -2777,7 +2993,29 @@ RegisterNUICallback('pay', function(data, cb)
 end)
 
 RegisterNetEvent('cdn-fuel:client:syncStations', function(newId, stationData)
-    if not newId or not stationData then return end
+    if not newId then return end
+
+    if not stationData then
+        -- Handle Deletion
+        if Config.GasStations[newId] then
+            if Stations[newId] then 
+                Stations[newId]:destroy()
+                Stations[newId] = nil
+            end
+            if CurrentLocation == newId then
+                inGasStation = false
+                CurrentLocation = 0
+                TriggerEvent('cdn-fuel:stations:updatelocation', nil)
+            end
+            if GasStationBlips[newId] then
+                RemoveBlip(GasStationBlips[newId])
+                GasStationBlips[newId] = nil
+            end
+            Config.GasStations[newId] = nil
+            if Config.FuelDebug then print("Posto #" .. newId .. " removido dinamicamente.") end
+        end
+        return
+    end
     
     -- Update Config
     Config.GasStations[newId] = stationData
@@ -2875,28 +3113,10 @@ RegisterNetEvent('cdn-fuel:client:createDynamicAirSeaZone', function(stationId, 
         
         print("[DEBUG] Attempting to spawn pumps. Count: " .. #stationData.fuelpumpcoords)
         
-        -- Spawn visual props for ALL placed pumps (since we skipped them in station_cl.lua)
-        local pumpModel = GetHashKey('prop_gas_pump_1d')
-        RequestModel(pumpModel)
-        while not HasModelLoaded(pumpModel) do Wait(10) end
-        print("[DEBUG] Model loaded: " .. pumpModel)
-
-        for i, pump in ipairs(stationData.fuelpumpcoords) do
-             print("[DEBUG] Spawning pump " .. i .. " at " .. pump.x .. ", " .. pump.y .. ", " .. pump.z)
-             local pumpObj = CreateObject(pumpModel, pump.x, pump.y, pump.z, false, false, false)
-             SetEntityHeading(pumpObj, pump.w)
-             FreezeEntityPosition(pumpObj, true)
-             if DoesEntityExist(pumpObj) then
-                 print("[DEBUG] Pump spawned successfully: " .. pumpObj)
-             else
-                 print("[DEBUG] Pump failed to spawn!")
-             end
-             -- Ideally, we should track these in StationProps in station_cl.lua to ensure clean deletion.
-             -- But this event is in fuel_cl.lua.
-             -- Let's stick to the Plan: fuel_cl.lua handles the LOGIC (PolyZone), station_cl.lua handles the VISUALS (Props).
-        end
+        -- Note: We rely on station_cl.lua to handle ALL visual props.
+        -- We do NOT spawn props here to prevent duplication and unmanaged entities.
     end
-
+    
     -- Add to table and Create Zone
     -- We need a unique index. Since Config.AirAndWaterVehicleFueling.locations is an array, 
     -- and we are adding dynamic ones, we should start indexing after the config static ones.
@@ -2936,19 +3156,21 @@ RegisterNetEvent('cdn-fuel:client:createDynamicAirSeaZone', function(stationId, 
                          lib.showTextUI(text, { position = 'left-center' })
                      else
                          exports[Config.Core]:DrawText(text, 'left')
-                     end
-                     
+    -- G key logic disabled in favor of manual hose-based aviation refueling
+--[[
                      -- Input Thread
                      CreateThread(function()
                          while isPointInside do
                              Wait(0)
                              if IsControlJustReleased(0, Config.AirAndWaterVehicleFueling.refuel_button) then
                                  -- Trigger Refuel Logic
-                                 TriggerEvent('cdn-fuel:client:RefuelVehicle', vehicle)
+                                 TriggerEvent('cdn-fuel:client:RefuelVehicle', { purchasetype = "cash", fuelamounttotal = 100, isAirSea = true })
                              end
                              if not IsPedInAnyVehicle(PlayerPedId()) then break end
                          end
                      end)
+]]
+                     end
                  end
             end
         else

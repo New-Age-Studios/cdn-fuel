@@ -16,55 +16,21 @@ RegisterNetEvent('cdn-fuel:client:createDynamicAirSeaZone', function(stationId, 
                 ['max'] = stationData.maxz or 999
             }
         },
-        ['draw_text'] = stationData.type == 'air' and "[G] Reabastecer Aeronave" or "[G] Reabastecer Barco",
+        ['draw_text'] = stationData.type == 'air' and "[Mangueira] Abastecer Aeronave" or "[G] Reabastecer Barco",
         ['type'] = stationData.type,
-        -- Optional: Whitelist from station settings if implemented?
         ['whitelist'] = {
             ['enabled'] = false 
-        },
-        ['prop'] = {
-            ['model'] = 'prop_gas_pump_1d', -- Default prop or customizable?
-            ['coords'] = nil -- Vector4
         }
     }
 
     -- Convert Zone Points
-    -- stationData.zones comes as array of {x, y}
     local coords = {}
     for i, p in ipairs(stationData.zones) do
         table.insert(coords, vector2(p.x, p.y))
     end
     locationData['PolyZone']['coords'] = coords
 
-    -- Handle Props (Visual Only for Air/Sea typically, but system supports it)
-    -- If user placed pumps in creator, we can use the first one as the 'main' prop location
-    if stationData.fuelpumpcoords and #stationData.fuelpumpcoords > 0 then
-        local p = stationData.fuelpumpcoords[1]
-        locationData['prop']['coords'] = vector4(p.x, p.y, p.z, p.w)
-        
-        print("[DEBUG] Attempting to spawn pumps. Count: " .. #stationData.fuelpumpcoords)
-        
-        -- Spawn visual props for ALL placed pumps (since we skipped them in station_cl.lua)
-        local pumpModel = GetHashKey('prop_gas_pump_1d')
-        RequestModel(pumpModel)
-        while not HasModelLoaded(pumpModel) do Wait(10) end
-        print("[DEBUG] Model loaded: " .. pumpModel)
-
-        for i, pump in ipairs(stationData.fuelpumpcoords) do
-             print("[DEBUG] Spawning pump " .. i .. " at " .. pump.x .. ", " .. pump.y .. ", " .. pump.z)
-             local pumpObj = CreateObject(pumpModel, pump.x, pump.y, pump.z, false, false, false)
-             SetEntityHeading(pumpObj, pump.w)
-             FreezeEntityPosition(pumpObj, true)
-             if DoesEntityExist(pumpObj) then
-                 print("[DEBUG] Pump spawned successfully: " .. pumpObj)
-             else
-                 print("[DEBUG] Pump failed to spawn!")
-             end
-             -- Ideally, we should track these in StationProps in station_cl.lua to ensure clean deletion.
-             -- But this event is in fuel_cl.lua.
-             -- Let's stick to the Plan: fuel_cl.lua handles the LOGIC (PolyZone), station_cl.lua handles the VISUALS (Props).
-        end
-    end
+    -- Skip Prop Spawning here, handled by station_cl.lua
 
     -- Add to table and Create Zone
     -- We need a unique index. Since Config.AirAndWaterVehicleFueling.locations is an array, 

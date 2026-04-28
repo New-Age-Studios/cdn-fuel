@@ -113,9 +113,10 @@ const App: React.FC = () => {
     price: 3.5,
     tax: 0,
     discount: 0,
-    type: "fuel", // 'fuel' | 'jerrycan' | 'electric' | 'syphon' | 'jerrycanRefuel'
+    type: "fuel", // 'fuel' | 'jerrycan' | 'electric' | 'syphon' | 'jerrycanRefuel' | 'jerrycanRefill'
     syphonData: undefined as SyphonData | undefined,
     jerryCanData: undefined as JerryCanData | undefined,
+    jerryCans: [] as JerryCanData[], // List of cans for refill mode
     stationName: "",
     logo: undefined as string | undefined,
   });
@@ -129,6 +130,7 @@ const App: React.FC = () => {
     null,
   );
   const [syphonMode, setSyphonMode] = useState<"in" | "out">("out"); // 'out' = siphon from car, 'in' = refuel car
+  const [selectedJerryCanIndex, setSelectedJerryCanIndex] = useState(0);
 
   const [showInteraction, setShowInteraction] = useState(false);
   const [interactionData, setInteractionData] = useState<any>(null); // Type properly if possible
@@ -151,16 +153,23 @@ const App: React.FC = () => {
           discount: data.discount || 0,
           stationName: data.stationName, // Let component handle fallback
           logo: data.logo,
+          jerryCans: data.jerryCans || [],
         });
 
-        if (data.type === "jerrycanRefuel") {
+        if (data.type === "jerrycanRefuel" || data.type === "jerrycanRefill") {
           setStep("selector");
+          if (data.type === "jerrycanRefill") {
+            setSelectedMethod("cash"); // Default to cash for pump refill
+          } else {
+            setSelectedMethod(null);
+          }
         } else {
           setStep("payment");
+          setSelectedMethod(null);
         }
 
-        setSelectedMethod(null);
         setSelectedAmount(0);
+        setSelectedJerryCanIndex(0);
         setVisible(true);
       } else if (action === "openManagement") {
         if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
@@ -169,9 +178,19 @@ const App: React.FC = () => {
         setShowInteraction(false);
         setVisible(true);
       } else if (action === "updateData") {
-        setManagementData((prev: any) =>
-          prev ? { ...prev, ...data } : prev
-        );
+        setManagementData((prev: any) => {
+          if (!prev) return prev;
+          
+          const newData = { ...prev };
+          for (const key in data) {
+            if (typeof data[key] === 'object' && data[key] !== null && !Array.isArray(data[key]) && prev[key]) {
+              newData[key] = { ...prev[key], ...data[key] };
+            } else {
+              newData[key] = data[key];
+            }
+          }
+          return newData;
+        });
       } else if (action === "openInteraction") {
         if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
         setInteractionData(data);
@@ -261,8 +280,10 @@ const App: React.FC = () => {
       amount: selectedAmount,
       method: selectedMethod,
       type: fuelData.type,
-      syphonData: fuelData.syphonData,
-      jerryCanData: fuelData.jerryCanData,
+      syphonData: fuelData.type === "syphon" ? fuelData.syphonData : undefined,
+      jerryCanData: fuelData.type === "jerrycanRefill" 
+        ? fuelData.jerryCans[selectedJerryCanIndex]?.itemData 
+        : fuelData.jerryCanData,
       // For Lua 'reason': 'syphon' (steal) or 'refuel' (give)
       reason:
         fuelData.type === "syphon"
@@ -304,6 +325,12 @@ const App: React.FC = () => {
       // Limit is Jerry Can Content OR Car Space
       const spaceInCar = 100 - fuelData.currentFuel;
       return Math.floor(Math.min(fuelData.jerryCanData.fuel, spaceInCar));
+    }
+
+    if (fuelData.type === "jerrycanRefill" && fuelData.jerryCans.length > 0) {
+      // Refueling a Jerry Can at the pump
+      const currentCan = fuelData.jerryCans[selectedJerryCanIndex];
+      return Math.floor(currentCan.cap - currentCan.fuel);
     }
 
     return fuelData.maxFuel;
@@ -350,16 +377,24 @@ const App: React.FC = () => {
             {step === "selector" && (
               <FuelSelector
                 maxFuel={getMaxFuelForSelector()}
-                currentFuel={fuelData.currentFuel}
+                currentFuel={
+                  fuelData.type === "jerrycanRefill" && fuelData.jerryCans.length > 0
+                    ? fuelData.jerryCans[selectedJerryCanIndex].fuel
+                    : fuelData.currentFuel
+                }
                 price={fuelData.price}
                 isJerryCan={fuelData.type === "jerrycan"}
                 isElectric={fuelData.type === "electric"}
                 isSyphon={fuelData.type === "syphon"}
                 isJerryCanRefuel={fuelData.type === "jerrycanRefuel"}
+                isJerryCanRefill={fuelData.type === "jerrycanRefill"}
+                jerryCans={fuelData.jerryCans}
+                selectedJerryCanIndex={selectedJerryCanIndex}
+                onJerryCanSelect={setSelectedJerryCanIndex}
                 syphonMode={syphonMode}
                 onConfirm={handleFuelSelect}
                 onClose={
-                  fuelData.type === "jerrycanRefuel"
+                  fuelData.type === "jerrycanRefuel" || fuelData.type === "jerrycanRefill"
                     ? handleClose
                     : handleBackToPayment
                 }

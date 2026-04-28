@@ -29,11 +29,11 @@ shared_scripts {
 }
 
 client_scripts {
+    'client/utils.lua',
     '@PolyZone/client.lua',
     'client/fuel_cl.lua',
     'client/electric_cl.lua',
     'client/station_cl.lua',
-    'client/utils.lua',
     'client/creator_cl.lua'
 }
 

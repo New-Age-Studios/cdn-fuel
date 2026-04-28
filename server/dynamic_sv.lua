@@ -30,21 +30,41 @@ local function LoadStationsFromDB()
                 local pedVec = (pedcoords and pedcoords.x) and vector4(pedcoords.x, pedcoords.y, pedcoords.z, pedcoords.w) or nil
 
                 local elecCoords = EnsureTable(dbStation.electricchargercoords)
-                local elecVec = (elecCoords and elecCoords.x) and vector4(elecCoords.x, elecCoords.y, elecCoords.z, elecCoords.w) or nil
+                local elecDataList = {}
+                if elecCoords then
+                    if elecCoords.x then -- Old format (single point)
+                        table.insert(elecDataList, vector4(elecCoords.x, elecCoords.y, elecCoords.z, elecCoords.w))
+                    else -- New format (array of points)
+                        for _, c in ipairs(elecCoords) do
+                            if c.x then
+                                table.insert(elecDataList, vector4(c.x, c.y, c.z, c.w))
+                            end
+                        end
+                    end
+                end
+                local elecVec = #elecDataList > 0 and elecDataList or nil
 
                 local unloadCoords = EnsureTable(dbStation.unloadcoords)
                 local unloadVec = (unloadCoords and unloadCoords.x) and vector4(unloadCoords.x, unloadCoords.y, unloadCoords.z, unloadCoords.w) or nil
 
                 local pumpCoords = EnsureTable(dbStation.fuelpumpcoords)
-                local pumpVecs = {}
+                local pumpDataList = {}
                 for _, p in ipairs(pumpCoords) do
                     if type(p) == "table" and p.x and p.y then
-                        table.insert(pumpVecs, vector4(p.x, p.y, p.z, p.w))
+                        -- Preserve model if exists
+                        table.insert(pumpDataList, {
+                            x = p.x,
+                            y = p.y,
+                            z = p.z,
+                            w = p.w,
+                            model = p.model
+                        })
                     end
                 end
 
                 -- Validation
-                if not pedVec then
+                local isPurchasable = (dbStation.is_purchasable == nil or dbStation.is_purchasable == 1 or dbStation.is_purchasable == true)
+                if not pedVec and isPurchasable then
                     print("^3[CDN-FUEL] Warning: Station ID " .. id .. " (" .. dbStation.label .. ") has missing or invalid pedcoords.^7")
                 end
                 if #convertedZones < 3 then
@@ -64,9 +84,10 @@ local function LoadStationsFromDB()
                     shutoff = dbStation.shutoff == 1 or dbStation.shutoff == true,
                     electricchargercoords = elecVec,
                     unloadcoords = unloadVec,
-                    fuelpumpcoords = pumpVecs,
+                    fuelpumpcoords = pumpDataList,
                     logo = dbStation.logo,
-                    type = dbStation.type or 'car'
+                    type = dbStation.type or 'car',
+                    is_purchasable = (dbStation.is_purchasable == nil or dbStation.is_purchasable == 1 or dbStation.is_purchasable == true)
                 }
                 count = count + 1
             end
@@ -112,25 +133,38 @@ RegisterNetEvent('cdn-fuel:server:createStation', function(data)
         maxz = data.maxz,
         pumpheightadd = 2.1,
         shutoff = data.shutoff or false,
-        type = data.type or 'car'
+        type = data.type or 'car',
+        is_purchasable = data.isPurchasable
     }
+
+    if Config.FuelDebug then
+        print("[CDN-FUEL] Servidor: Recebido tipo de posto: " .. tostring(newStation.type) .. " | Comprável: " .. tostring(newStation.is_purchasable))
+    end
 
     local memStation = {
         label = newStation.label,
         cost = newStation.cost,
         zones = {},
-        pedcoords = vector4(newStation.pedcoords.x, newStation.pedcoords.y, newStation.pedcoords.z, newStation.pedcoords.w),
+        pedcoords = newStation.pedcoords and vector4(newStation.pedcoords.x, newStation.pedcoords.y, newStation.pedcoords.z, newStation.pedcoords.w) or nil,
         minz = newStation.minz,
         maxz = newStation.maxz,
         pumpheightadd = 2.1,
         shutoff = newStation.shutoff,
         pedmodel = data.pedmodel,
         type = newStation.type,
+        is_purchasable = newStation.is_purchasable,
         electricchargercoords = nil
     }
     
     if newStation.electricchargercoords then
-        memStation.electricchargercoords = vector4(newStation.electricchargercoords.x, newStation.electricchargercoords.y, newStation.electricchargercoords.z, newStation.electricchargercoords.w)
+        if newStation.electricchargercoords.x then -- Single point
+            memStation.electricchargercoords = vector4(newStation.electricchargercoords.x, newStation.electricchargercoords.y, newStation.electricchargercoords.z, newStation.electricchargercoords.w)
+        else -- Multiple points
+            memStation.electricchargercoords = {}
+            for _, c in ipairs(newStation.electricchargercoords) do
+                table.insert(memStation.electricchargercoords, vector4(c.x, c.y, c.z, c.w))
+            end
+        end
     end
     
     if newStation.unloadcoords then
@@ -140,7 +174,7 @@ RegisterNetEvent('cdn-fuel:server:createStation', function(data)
     memStation.fuelpumpcoords = {}
     if data.fuelpumpcoords then
         for _, p in ipairs(data.fuelpumpcoords) do
-            table.insert(memStation.fuelpumpcoords, vector4(p.x, p.y, p.z, p.w))
+            table.insert(memStation.fuelpumpcoords, {x=p.x, y=p.y, z=p.z, w=p.w, model=p.model})
         end
     end
 
@@ -157,7 +191,7 @@ RegisterNetEvent('cdn-fuel:server:createStation', function(data)
     local fuelPumpCoordsJson = json.encode(data.fuelpumpcoords)
     local stationType = newStation.type
 
-    MySQL.Async.execute('INSERT INTO fuel_stations (location, label, cost, fuel, fuelprice, balance, zones, minz, maxz, pedmodel, pedcoords, shutoff, pumpheightadd, electricchargercoords, unloadcoords, fuelpumpcoords, type, stock_level) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    MySQL.Async.execute('INSERT INTO fuel_stations (location, label, cost, fuel, fuelprice, balance, zones, minz, maxz, pedmodel, pedcoords, shutoff, pumpheightadd, electricchargercoords, unloadcoords, fuelpumpcoords, type, stock_level, is_purchasable) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
         {
             newId, 
             newStation.label, 
@@ -165,18 +199,19 @@ RegisterNetEvent('cdn-fuel:server:createStation', function(data)
             Config.DefaultFuelOnPurchase or 5000, 
             3, 
             0,
-            zonesJson,
-            newStation.minz,
-            newStation.maxz,
-            data.pedmodel or "a_m_m_indian_01",
-            pedCoordsJson,
-            newStation.shutoff,
-            2.1,
-            elecCoordsJson,
-            unloadCoordsJson,
-            fuelPumpCoordsJson,
-            stationType,
-            0
+            zonesJson, 
+            newStation.minz, 
+            newStation.maxz, 
+            data.pedmodel or "a_m_m_indian_01", 
+            pedCoordsJson, 
+            newStation.shutoff, 
+            2.1, 
+            elecCoordsJson, 
+            unloadCoordsJson, 
+            fuelPumpCoordsJson, 
+            stationType, 
+            0,
+            newStation.is_purchasable
         }, function(rows)
             if rows > 0 then
                 TriggerClientEvent('QBCore:Notify', src, 'Posto criado com sucesso! ID: ' .. newId, 'success')
@@ -205,8 +240,8 @@ RegisterCommand('migrate_json_to_sql', function(source, args, rawCommand)
         local elecCoordsJson = station.electricchargercoords and json.encode(station.electricchargercoords) or nil
         
         local query = [[
-            INSERT INTO fuel_stations (location, label, cost, fuel, fuelprice, balance, zones, minz, maxz, pedmodel, pedcoords, shutoff, pumpheightadd, electricchargercoords, unloadcoords, fuelpumpcoords, type)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO fuel_stations (location, label, cost, fuel, fuelprice, balance, zones, minz, maxz, pedmodel, pedcoords, shutoff, pumpheightadd, electricchargercoords, unloadcoords, fuelpumpcoords, type, is_purchasable)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON DUPLICATE KEY UPDATE
             zones = VALUES(zones),
             minz = VALUES(minz),
@@ -220,7 +255,8 @@ RegisterCommand('migrate_json_to_sql', function(source, args, rawCommand)
             fuelpumpcoords = VALUES(fuelpumpcoords),
             label = VALUES(label),
             cost = VALUES(cost),
-            type = VALUES(type)
+            type = VALUES(type),
+            is_purchasable = VALUES(is_purchasable)
         ]]
         
         MySQL.Async.execute(query, {
@@ -238,7 +274,8 @@ RegisterCommand('migrate_json_to_sql', function(source, args, rawCommand)
             elecCoordsJson,
             station.unloadcoords and json.encode(station.unloadcoords) or nil,
             station.fuelpumpcoords and json.encode(station.fuelpumpcoords) or nil,
-            station.type or 'car'
+            station.type or 'car',
+            true -- Default purchasable for migrated ones
         }, function()
             count = count + 1
             if count == total then
@@ -263,3 +300,37 @@ RegisterNetEvent('cdn-fuel:server:updateUnloadCoords', function(stationId, coord
         end
     end)
 end)
+
+RegisterCommand('deletefuel', function(source, args)
+    local src = source
+    if src ~= 0 then
+        local Player = QBCore.Functions.GetPlayer(src)
+        if not Player or (not QBCore.Functions.HasPermission(src, 'admin') and not QBCore.Functions.HasPermission(src, 'god')) then
+            return
+        end
+    end
+
+    local stationId = tonumber(args[1])
+    if not stationId then
+        if src ~= 0 then TriggerClientEvent('QBCore:Notify', src, 'Uso: /deletefuel [ID]', 'error') end
+        return
+    end
+
+    if not Config.GasStations[stationId] then
+        if src ~= 0 then TriggerClientEvent('QBCore:Notify', src, 'Posto não encontrado.', 'error') end
+        return
+    end
+
+    MySQL.Async.execute('DELETE FROM fuel_stations WHERE location = ?', {stationId}, function(rows)
+        if rows > 0 then
+            Config.GasStations[stationId] = nil
+            TriggerClientEvent('cdn-fuel:client:syncStations', -1, stationId, nil)
+            TriggerClientEvent('cdn-fuel:client:deleteStationProps', -1, stationId) -- Cleanup props
+            if src ~= 0 then
+                TriggerClientEvent('QBCore:Notify', src, 'Posto #'..stationId..' deletado com sucesso!', 'success')
+            else
+                print("[CDN-FUEL] Posto #"..stationId.." deletado via console.")
+            end
+        end
+    end)
+end, false)

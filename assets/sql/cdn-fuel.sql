@@ -28,8 +28,16 @@ CREATE TABLE IF NOT EXISTS `fuel_stations` (
   `logo` longtext DEFAULT NULL,
   `type` varchar(50) DEFAULT 'car',
   `unloadcoords` text DEFAULT NULL,
-  `stock_level` int(11) DEFAULT 0,
-  `loyalty_level` int(11) DEFAULT 0,
+  `stock_level` int(11) DEFAULT 0, -- Nível de upgrade de capacidade de estoque
+  `loyalty_level` int(11) DEFAULT 0, -- Nível de plano de fidelidade (Combustível)
+  -- Sistema de Gestão Elétrica
+  `electric_consumed` float DEFAULT 0, -- kWh consumidos desde a última fatura
+  `electric_bill_due` datetime DEFAULT NULL, -- Data de vencimento da próxima fatura
+  `electric_debt` int(11) DEFAULT 0, -- Valor total em dívida elétrica
+  `electric_loyalty_level` int(11) DEFAULT 0, -- Nível de plano de fidelidade (Elétrico)
+  `electric_status` tinyint(1) DEFAULT 1, -- 1: Ativo, 0: Desativado por falta de pagamento
+  `electric_debt_since` timestamp NULL DEFAULT NULL, -- Data em que a dívida elétrica começou (para carência)
+  `is_purchasable` tinyint(1) DEFAULT 1, -- 1: Comprável, 0: Não comprável
   PRIMARY KEY (`location`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 

@@ -15,15 +15,24 @@ interface LoyaltyTier {
     color?: string;
 }
 
+interface LoyaltyPlan {
+    label: string;
+    price: number;
+    discount: number;
+}
+
 interface UpgradesProps {
     currentLevel: number;
     upgrades: UpgradeTier[];
     loyaltyLevel: number;
     loyaltyUpgrades: LoyaltyTier[];
+    electricLoyaltyLevel: number;
+    electricLoyaltyPlans: Record<number, LoyaltyPlan>;
+    pricePerKwh: number;
     onAction: (action: string, data?: any) => void;
 }
 
-const Upgrades: React.FC<UpgradesProps> = ({ currentLevel, upgrades, loyaltyLevel, loyaltyUpgrades, onAction }) => {
+const Upgrades: React.FC<UpgradesProps> = ({ currentLevel, upgrades, loyaltyLevel, loyaltyUpgrades, electricLoyaltyLevel, electricLoyaltyPlans, pricePerKwh, onAction }) => {
     
     // Helper to generate variations from the base color
     const getColorsFromHex = (hex: string = '#3b82f6') => {
@@ -176,6 +185,88 @@ const Upgrades: React.FC<UpgradesProps> = ({ currentLevel, upgrades, loyaltyLeve
                     })}
                 </div>
             </div>
+
+            {/* Section 3: Electric Loyalty Plans */}
+            {electricLoyaltyPlans && (
+                <div className="flex flex-col gap-6">
+                    <div>
+                        <h2 className="text-3xl font-bold text-primary mb-2">Plano de Fidelidade Elétrica</h2>
+                        <p className="text-text-muted">Reduza o custo operacional dos carregadores elétricos</p>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-4 gap-6">
+                        {Object.entries(electricLoyaltyPlans).map(([level, plan]) => {
+                            const tierLevel = Number(level);
+                            const isUnlocked = tierLevel <= electricLoyaltyLevel;
+                            const isNext = tierLevel === electricLoyaltyLevel + 1;
+                            const isLocked = tierLevel > electricLoyaltyLevel + 1;
+                            
+                            // Use a yellow/bolt theme for electric
+                            const colors = getColorsFromHex('#eab308'); 
+
+                            return (
+                                <div 
+                                    key={level} 
+                                    className={`bg-dashboard-card border rounded-2xl p-6 flex flex-col transition-all duration-300 ${
+                                        isUnlocked 
+                                        ? 'shadow-lg shadow-black/20' 
+                                        : isNext 
+                                            ? 'border-border-color hover:shadow-xl' 
+                                            : 'border-border-color opacity-60'
+                                    }`}
+                                    style={{
+                                        borderColor: isUnlocked || isNext ? colors.main : undefined,
+                                        borderWidth: isUnlocked ? '2px' : '1px'
+                                    }}
+                                >
+                                    <div className="flex justify-between items-start mb-4">
+                                        <div 
+                                            className={`p-3 rounded-xl transition-colors`}
+                                            style={{ backgroundColor: isUnlocked ? colors.bg : 'rgba(255,255,255,0.05)', color: isUnlocked ? colors.main : '#666' }}
+                                        >
+                                            <span className="material-symbols-outlined text-3xl">
+                                                bolt
+                                            </span>
+                                        </div>
+                                        {isUnlocked && (
+                                            <span 
+                                                className="text-[10px] font-black px-2 py-1 rounded uppercase tracking-wider"
+                                                style={{ backgroundColor: colors.bg, color: colors.main }}
+                                            >
+                                                Ativo
+                                            </span>
+                                        )}
+                                    </div>
+
+                                    <h3 className="text-lg font-bold text-primary mb-1">{plan.label}</h3>
+                                    <p className="text-sm text-text-muted mb-6">Custo/kWh: <span className="text-primary font-bold">R${(pricePerKwh * (1 - (plan.discount/100))).toFixed(2)}</span></p>
+
+                                    <div className="mt-auto">
+                                        <div className="text-2xl font-black text-primary mb-4">
+                                            {plan.price > 0 ? `$${plan.price.toLocaleString()}` : 'Grátis'}
+                                        </div>
+
+                                        <button 
+                                            disabled={isUnlocked || isLocked}
+                                            onClick={() => onAction('manage:buyElectricLoyalty', { level: tierLevel, price: plan.price })}
+                                            className={`w-full py-3 rounded-xl font-bold transition-all duration-200 shadow-lg`}
+                                            style={{
+                                                backgroundColor: isUnlocked ? 'rgba(255,255,255,0.05)' : isNext ? colors.main : 'rgba(255,255,255,0.02)',
+                                                color: isNext ? '#000' : '#666',
+                                                opacity: isLocked ? 0.3 : 1,
+                                                cursor: isUnlocked ? 'default' : isLocked ? 'not-allowed' : 'pointer',
+                                                boxShadow: isNext ? `0 10px 15px -3px ${colors.glow}` : 'none'
+                                            }}
+                                        >
+                                            {isUnlocked ? 'Já Adquirido' : isLocked ? 'Bloqueado' : 'Contratar Plano'}
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
         </div>
     );
 };

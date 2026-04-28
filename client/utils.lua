@@ -143,3 +143,23 @@ function IsVehicleBlacklisted(veh, vehName)
 		return false
 	end
 end
+
+function HexToRGB(hex)
+    hex = hex:gsub("#","")
+    local r, g, b, a
+    if #hex == 8 then
+        r = tonumber("0x"..hex:sub(1,2))
+        g = tonumber("0x"..hex:sub(3,4))
+        b = tonumber("0x"..hex:sub(5,6))
+        a = tonumber("0x"..hex:sub(7,8))
+    else
+        r = tonumber("0x"..hex:sub(1,2))
+        g = tonumber("0x"..hex:sub(3,4))
+        b = tonumber("0x"..hex:sub(5,6))
+        a = 255
+    end
+    return { r = r, g = g, b = b, a = a }
+end
+
+-- Compatibility for scripts still using Config.HexToRGB
+Config.HexToRGB = HexToRGB

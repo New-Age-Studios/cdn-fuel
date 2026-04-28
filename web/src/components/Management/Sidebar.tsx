@@ -27,6 +27,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: "analytics", label: "Estatísticas", icon: "bar_chart" },
     { id: "finance", label: "Financeiro", icon: "account_balance_wallet" },
     { id: "fuel", label: "Combustível", icon: "local_gas_station" },
+    { id: "electric", label: "Energia Elétrica", icon: "bolt" },
     { id: "upgrades", label: "Upgrades", icon: "upgrade" },
     { id: "settings", label: "Configurações", icon: "settings" },
   ];

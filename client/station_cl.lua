@@ -108,14 +108,63 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                     -- Loyalty Level --
                     if info == "all" or info == "loyalty_level" then
                         CurrentLoyaltyLevel = v.loyalty_level or 0
-                        CurrentReservePrice = Config.LoyaltyUpgrades[CurrentLoyaltyLevel] and Config.LoyaltyUpgrades[CurrentLoyaltyLevel].fuelPrice or Config.FuelReservesPrice or 3.0
+                        
+                        -- Aviation Pricing Override
+                        if Config.GasStations[CurrentLocation] and Config.GasStations[CurrentLocation].type == 'air' then
+                            CurrentReservePrice = Config.AviationReservesPrice or 12.0
+                        else
+                            CurrentReservePrice = Config.LoyaltyUpgrades[CurrentLoyaltyLevel] and Config.LoyaltyUpgrades[CurrentLoyaltyLevel].fuelPrice or Config.FuelReservesPrice or 3.0
+                        end
+                        
                         if Config.FuelDebug then print("Loyalty Level: "..CurrentLoyaltyLevel.." | Reserve Price: "..CurrentReservePrice) end
+                    end
+                    -- Electric Fields --
+                    if info == "all" or info == "electric" then
+                        CurrentElectricConsumed = v.electric_consumed or 0
+                        CurrentElectricDebt = v.electric_debt or 0
+                        CurrentElectricLoyalty = v.electric_loyalty_level or 0
+                        CurrentElectricStatus = (v.electric_status == 0 or v.electric_status == false) and 0 or 1
+                        CurrentElectricBillDue = v.electric_bill_due or "N/A"
+                        if Config.FuelDebug then print("Electric Consumed: "..CurrentElectricConsumed.." | Debt: "..CurrentElectricDebt) end
                     end
                     ----------------
                 end
             end
         end, CurrentLocation)
     end exports(UpdateStationInfo, UpdateStationInfo)
+
+    -- Initialize Global Central Maritime Unload Hub
+    CreateThread(function()
+        if Config.MaritimePlatform and Config.MaritimePlatform.CentralUnloadCoords then
+            local coords = Config.MaritimePlatform.CentralUnloadCoords
+            if coords and coords.x ~= 0.0 then
+                local propModel = joaat(Config.UnloadPropModel or 'prop_indus_pumps_01')
+                RequestAndLoadModel(propModel)
+                local centralProp = CreateObject(propModel, coords.x, coords.y, coords.z, false, false, false)
+                SetEntityHeading(centralProp, coords.w or 0.0)
+                FreezeEntityPosition(centralProp, true)
+                
+                AddTargetEntity(centralProp, {
+                    options = {{
+                        type = "client",
+                        label = Lang:t("connect_hose_station"),
+                        icon = "fas fa-fill-drip",
+                        action = function() 
+                            if ReservePickupData and ReservePickupData.location then
+                                TriggerEvent('cdn-fuel:station:client:connectHoseToStation', ReservePickupData.location) 
+                            end
+                        end,
+                        canInteract = function() 
+                            if not MissionStarted or not holdingHose or not ReservePickupData or not ReservePickupData.location then return false end
+                            local station = Config.GasStations[ReservePickupData.location]
+                            return station and station.type == 'boat_platform'
+                        end
+                    }},
+                    distance = 2.5
+                })
+            end
+        end
+    end)
 
     -- Optimization: Distance-based spawning
     CreateThread(function()
@@ -125,89 +174,198 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
             local sleep = 1500
 
             for i, current in pairs(Config.GasStations) do
-                if current and current.pedcoords then
-                    local dist = #(coords - vector3(current.pedcoords.x, current.pedcoords.y, current.pedcoords.z))
-                    
-                    if dist < 150.0 then
-                        sleep = 500
-                        if not StationProps[i] then
-                            StationProps[i] = { pumps = {} }
-                            
-                            -- Spawn Ped
-                            local model = type(current.pedmodel) == 'string' and joaat(current.pedmodel) or current.pedmodel or joaat('a_m_m_indian_01')
-                            RequestAndLoadModel(model)
-                            local stationPed = CreatePed(0, model, current.pedcoords.x, current.pedcoords.y, current.pedcoords.z, current.pedcoords.w, false, false)
-                            FreezeEntityPosition(stationPed, true)
-                            SetEntityInvincible(stationPed, true)
-                            SetBlockingOfNonTemporaryEvents(stationPed, true)
-                            StationProps[i].ped = stationPed
-                            
-                            AddTargetEntity(stationPed, {
-                                options = {{
-                                    type = "client",
-                                    label = Lang:t("station_talk_to_ped"),
-                                    icon = "fas fa-building",
-                                    action = function() TriggerEvent('cdn-fuel:stations:openmenu', i) end,
-                                    canInteract = function() return not MissionStarted end
-                                }},
-                                distance = 2.0
-                            })
+                if current then
+                    local targetCoords = nil
+                    if current.pedcoords then
+                        targetCoords = vector3(current.pedcoords.x, current.pedcoords.y, current.pedcoords.z)
+                    elseif current.fuelpumpcoords and #current.fuelpumpcoords > 0 then
+                        -- Fallback to first pump location for public stations
+                        local firstPump = current.fuelpumpcoords[1]
+                        targetCoords = vector3(firstPump.x, firstPump.y, firstPump.z)
+                    end
 
-                            -- Spawn Unloading Prop
-                            local unloadCoords = current.unloadcoords or (Config.StationUnloadCoords and Config.StationUnloadCoords[i]) or (current.pedcoords)
-                            if unloadCoords then
-                                local propModel = joaat(Config.UnloadPropModel or 'prop_indus_pumps_01')
-                                RequestAndLoadModel(propModel)
-                                local prop = CreateObject(propModel, unloadCoords.x, unloadCoords.y, unloadCoords.z, false, false, false)
-                                SetEntityHeading(prop, unloadCoords.w or 0.0)
-                                PlaceObjectOnGroundProperly(prop)
-                                FreezeEntityPosition(prop, true)
-                                StationProps[i].unloadProp = prop
+                    if targetCoords then
+                        local dist = #(coords - targetCoords)
+                        
+                        if dist < 150.0 then
+                            sleep = 500
+                            if not StationProps[i] then
+                                StationProps[i] = { pumps = {}, chargers = {} }
                                 
-                                AddTargetEntity(prop, {
-                                    options = {{
-                                        type = "client",
-                                        label = Lang:t("connect_hose_station"),
-                                        icon = "fas fa-fill-drip",
-                                        action = function() TriggerEvent('cdn-fuel:station:client:connectHoseToStation', i) end,
-                                        canInteract = function() return MissionStarted and holdingHose and i == ReservePickupData.location end
-                                    }},
-                                    distance = 2.5
-                                })
-                            end
+                                -- Spawn Ped (Skip if not purchasable or no coords)
+                                if current.is_purchasable ~= false and current.pedcoords then
+                                    local model = type(current.pedmodel) == 'string' and joaat(current.pedmodel) or current.pedmodel or joaat('a_m_m_indian_01')
+                                    RequestAndLoadModel(model)
+                                    local stationPed = CreatePed(0, model, current.pedcoords.x, current.pedcoords.y, current.pedcoords.z, current.pedcoords.w, false, false)
+                                    FreezeEntityPosition(stationPed, true)
+                                    SetEntityInvincible(stationPed, true)
+                                    SetBlockingOfNonTemporaryEvents(stationPed, true)
+                                    StationProps[i].ped = stationPed
+                                    
+                                    AddTargetEntity(stationPed, {
+                                        options = {{
+                                            type = "client",
+                                            label = Lang:t("station_talk_to_ped"),
+                                            icon = "fas fa-building",
+                                            action = function() TriggerEvent('cdn-fuel:stations:openmenu', i) end,
+                                            canInteract = function() return not MissionStarted end
+                                        }},
+                                        distance = 2.0
+                                    })
+                                end
 
-                            -- Spawn electric charger
-                            if current.electricchargercoords then
-                                local chargerModel = GetHashKey(Config.ElectricChargerModel)
-                                RequestAndLoadModel(chargerModel)
-                                local charger = CreateObject(chargerModel, current.electricchargercoords.x, current.electricchargercoords.y, current.electricchargercoords.z, false, false, false)
-                                SetEntityHeading(charger, current.electricchargercoords.w)
-                                FreezeEntityPosition(charger, true)
-                                StationProps[i].charger = charger
-                            end
+                                -- Spawn Unloading Prop (Skip for Aviation/Air)
+                                local isAirStation = current.type == 'air'
+                                
+                                if Config.FuelDebug then 
+                                    print("[CDN-FUEL] Sincronizando Posto ID: " .. i .. " | Tipo: " .. tostring(current.type))
+                                end
 
-                            -- Spawn fuel pumps
-                            if current.fuelpumpcoords and #current.fuelpumpcoords > 0 and (current.type ~= 'air' and current.type ~= 'water') then
-                                local pumpModel = GetHashKey('prop_gas_pump_1d')
-                                RequestAndLoadModel(pumpModel)
-                                for _, pumpCoord in ipairs(current.fuelpumpcoords) do
-                                    local pump = CreateObject(pumpModel, pumpCoord.x, pumpCoord.y, pumpCoord.z, false, false, false)
-                                    SetEntityHeading(pump, pumpCoord.w)
-                                    FreezeEntityPosition(pump, true)
-                                    table.insert(StationProps[i].pumps, pump)
+                                local unloadCoords = current.unloadcoords or (Config.StationUnloadCoords and Config.StationUnloadCoords[i])
+                                
+                                -- Only fallback to ped coords if NOT an air station AND is purchasable
+                                if not unloadCoords and not isAirStation and current.is_purchasable ~= false then
+                                    unloadCoords = current.pedcoords
+                                end
+                                
+                                if unloadCoords and not isAirStation and current.is_purchasable ~= false then
+                                    -- DOUBLE CHECK: Ensure we don't spawn it if it's an air station
+                                    local propModel = joaat(Config.UnloadPropModel or 'prop_indus_pumps_01')
+                                    RequestAndLoadModel(propModel)
+                                    local prop = CreateObject(propModel, unloadCoords.x, unloadCoords.y, unloadCoords.z, false, false, false)
+                                    SetEntityHeading(prop, unloadCoords.w or 0.0)
+                                    FreezeEntityPosition(prop, true)
+                                    StationProps[i].unloadProp = prop
+                                    
+                                    -- Visual Debug Nozzle for positioning
+                                    if Config.FuelDebug then
+                                        local debugNozzleModel = joaat('prop_cs_fuel_nozle')
+                                        RequestAndLoadModel(debugNozzleModel)
+                                        local debugNozzle = CreateObject(debugNozzleModel, 1.0, 1.0, 1.0, false, false, false)
+                                        local attach = Config.UnloadNozzleAttachment or { pos = vec3(0.0, 0.0, 1.1), rot = vec3(0.0, 0.0, 0.0) }
+                                        AttachEntityToEntity(debugNozzle, prop, 0, attach.pos.x, attach.pos.y, attach.pos.z, attach.rot.x, attach.rot.y, attach.rot.z, false, false, false, false, 2, true)
+                                        
+                                        local debugColor = HexToRGB(Config.DebugColor or "#FF00FF")
+                                        SetEntityDrawOutline(debugNozzle, true)
+                                        SetEntityDrawOutlineColor(debugColor.r, debugColor.g, debugColor.b, 255)
+                                        SetEntityAlpha(debugNozzle, 150, false)
+                                        StationProps[i].debugNozzle = debugNozzle
+                                    end
+
+                                    AddTargetEntity(prop, {
+                                        options = {{
+                                            type = "client",
+                                            label = Lang:t("connect_hose_station"),
+                                            icon = "fas fa-fill-drip",
+                                            action = function() TriggerEvent('cdn-fuel:station:client:connectHoseToStation', i) end,
+                                            canInteract = function() return MissionStarted and holdingHose and i == ReservePickupData.location end
+                                        }},
+                                        distance = 2.5
+                                    })
+                                end
+
+                                -- Spawn electric chargers
+                                StationProps[i].chargers = {}
+                                if current.electricchargercoords then
+                                    local chargerModel = GetHashKey(Config.ElectricChargerModel)
+                                    RequestAndLoadModel(chargerModel)
+                                    
+                                    local chargersToSpawn = {}
+                                    if type(current.electricchargercoords) == "table" and current.electricchargercoords.x then
+                                        table.insert(chargersToSpawn, current.electricchargercoords)
+                                    elseif type(current.electricchargercoords) == "table" then
+                                        chargersToSpawn = current.electricchargercoords
+                                    end
+
+                                    if Config.FuelDebug then print("[CDN-FUEL] Posto #"..i.." - Carregadores encontrados: "..#chargersToSpawn) end
+
+                                    for _, cCoords in ipairs(chargersToSpawn) do
+                                        if cCoords and cCoords.x then
+                                            if Config.FuelDebug then print("[CDN-FUEL] Criando Carregador para Posto #" .. i) end
+                                            local charger = CreateObject(chargerModel, cCoords.x, cCoords.y, cCoords.z, false, false, false)
+                                            SetEntityHeading(charger, cCoords.w or 0.0)
+                                            FreezeEntityPosition(charger, true)
+                                            table.insert(StationProps[i].chargers, charger)
+                                        end
+                                    end
+                                end
+
+                                -- Spawn fuel pumps
+                                StationProps[i].pumps = {}
+                                if current.fuelpumpcoords and #current.fuelpumpcoords > 0 then
+                                    if Config.FuelDebug then print("[CDN-FUEL] Posto #"..i.." - Bombas encontradas: "..#current.fuelpumpcoords) end
+                                    for _, pumpData in ipairs(current.fuelpumpcoords) do
+                                        -- Check if it's the new structure {x,y,z,w,model} or old vector4/table
+                                        local pCoords = pumpData
+                                        local pModelName = isAirStation and 'prop_gas_tank_02a' or 'prop_gas_pump_1d' -- Contextual Fallback
+                                        
+                                        if not isAirStation and type(pumpData) == "table" and pumpData.model then
+                                            pModelName = pumpData.model
+                                        end
+
+                                        if type(pumpData) == "table" and pumpData.is_platform then
+                                            -- Spawn the main maritime platform
+                                            if Config.FuelDebug then print("[CDN-FUEL] Criando Plataforma para Posto #" .. i) end
+                                            local platformModel = GetHashKey(pumpData.model)
+                                            RequestAndLoadModel(platformModel)
+                                            local platformProp = CreateObject(platformModel, pCoords.x, pCoords.y, pCoords.z, false, false, false)
+                                            SetEntityHeading(platformProp, pCoords.w or 0.0)
+                                            FreezeEntityPosition(platformProp, true)
+                                            StationProps[i].platform = platformProp
+                                        elseif pModelName ~= 'maritime_invisible_pump' then
+                                            if Config.FuelDebug then
+                                                print("[CDN-FUEL] Criando Bomba para Posto #" .. i .. " | Modelo: " .. pModelName)
+                                            end
+
+                                            -- Clear native pumps at this location to prevent overlapping
+                                            for _, model in ipairs(Config.PumpModels) do
+                                                local nativePump = GetClosestObjectOfType(pCoords.x, pCoords.y, pCoords.z, 2.5, joaat(model), false, false, false)
+                                                if nativePump ~= 0 and not IsEntityAMissionEntity(nativePump) then
+                                                    SetEntityAsMissionEntity(nativePump, true, true)
+                                                    DeleteEntity(nativePump)
+                                                end
+                                            end
+
+                                            local pumpModel = GetHashKey(pModelName)
+                                            RequestAndLoadModel(pumpModel)
+                                            
+                                            local pump = CreateObject(pumpModel, pCoords.x, pCoords.y, pCoords.z, false, false, false)
+                                            SetEntityHeading(pump, pCoords.w)
+                                            FreezeEntityPosition(pump, true)
+                                            table.insert(StationProps[i].pumps, pump)
+
+                                            -- If it's an air station, add the Unload target to the pumps themselves
+                                            if isAirStation then
+                                                AddTargetEntity(pump, {
+                                                    options = {{
+                                                        type = "client",
+                                                        label = Lang:t("connect_hose_station"),
+                                                        icon = "fas fa-fill-drip",
+                                                        action = function() TriggerEvent('cdn-fuel:station:client:connectHoseToStation', i) end,
+                                                        canInteract = function() return MissionStarted and holdingHose and i == ReservePickupData.location end
+                                                    }},
+                                                    distance = 2.5
+                                                })
+                                            end
+                                        end
+                                    end
                                 end
                             end
-                        end
-                    else
-                        -- Out of range, delete peds/props
-                        if StationProps[i] then
-                            if StationProps[i].ped then DeleteEntity(StationProps[i].ped) end
-                            if StationProps[i].unloadProp then DeleteEntity(StationProps[i].unloadProp) end
-                            if StationProps[i].charger then DeleteEntity(StationProps[i].charger) end
-                            if StationProps[i].pumps then
-                                for _, p in ipairs(StationProps[i].pumps) do DeleteEntity(p) end
+                        else
+                            -- Out of range, delete peds/props
+                            if StationProps[i] then
+                                if StationProps[i].ped then DeleteEntity(StationProps[i].ped) end
+                                if StationProps[i].unloadProp then DeleteEntity(StationProps[i].unloadProp) end
+                                if StationProps[i].debugNozzle then DeleteEntity(StationProps[i].debugNozzle) end
+                                if StationProps[i].platform then DeleteEntity(StationProps[i].platform) end
+                                if StationProps[i].chargers then
+                                    for _, c in ipairs(StationProps[i].chargers) do DeleteEntity(c) end
+                                end
+                                if StationProps[i].pumps then
+                                    for _, p in ipairs(StationProps[i].pumps) do DeleteEntity(p) end
+                                end
+                                StationProps[i] = nil
                             end
-                            StationProps[i] = nil
                         end
                     end
                 end
@@ -308,12 +466,15 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         end
 
         local propCoords = GetEntityCoords(depotLoadProp)
+        local ropeOffset = Config.TankerLoadRopeOffset or vec3(0.0, 0.0, 2.1)
+        local attachCoords = GetOffsetFromEntityInWorldCoords(depotLoadProp, ropeOffset.x, ropeOffset.y, ropeOffset.z)
         local nozzlePos = GetOffsetFromEntityInWorldCoords(depotNozzle, 0.0, -0.033, -0.195)
-        depotRope = AddRope(propCoords.x, propCoords.y, propCoords.z, 0.0, 0.0, 0.0, 3.0, Config.RopeType and Config.RopeType['fuel'] or 4, 10.0, 0.0, 1.0, false, false, false, 1.0, true)
+        
+        depotRope = AddRope(attachCoords.x, attachCoords.y, attachCoords.z, 0.0, 0.0, 0.0, 3.0, Config.RopeType and Config.RopeType['fuel'] or 4, 10.0, 0.0, 1.0, false, false, false, 1.0, true)
         while not depotRope do Wait(0) end
         ActivatePhysics(depotRope)
         Wait(100)
-        AttachEntitiesToRope(depotRope, depotLoadProp, depotNozzle, propCoords.x, propCoords.y, propCoords.z + 2.1, nozzlePos.x, nozzlePos.y, nozzlePos.z, 10.0, false, false, nil, nil)
+        AttachEntitiesToRope(depotRope, depotLoadProp, depotNozzle, attachCoords.x, attachCoords.y, attachCoords.z, nozzlePos.x, nozzlePos.y, nozzlePos.z, 10.0, false, false, nil, nil)
 
         QBCore.Functions.Notify(spawnedTankerTrailer and "Leve o bico até o reboque para encher o tanque!" or "Leve o bico até o caminhão para encher o tanque!", "primary")
         
@@ -539,12 +700,32 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         isProcessing = true
         
         local ped = PlayerPedId()
-        local stationData = StationProps[stationId]
-        local targetProp = stationData and stationData.unloadProp
+        local stationData = Config.GasStations[stationId]
+        local stationProps = StationProps[stationId]
+        local targetProp = stationProps and stationProps.unloadProp
         
+        -- Special handling for Aviation: No unloadProp, use the pump the player is closest to
+        if stationData and stationData.type == 'air' and stationProps and stationProps.pumps then
+            local pCoords = GetEntityCoords(ped)
+            local closestDist = -1
+            for _, pump in ipairs(stationProps.pumps) do
+                local dist = #(pCoords - GetEntityCoords(pump))
+                if closestDist == -1 or dist < closestDist then
+                    closestDist = dist
+                    targetProp = pump
+                end
+            end
+        elseif stationData and stationData.type == 'boat_platform' and Config.MaritimePlatform.CentralUnloadCoords then
+            -- For boat platforms, the target prop is the global central hub
+            local centralCoords = Config.MaritimePlatform.CentralUnloadCoords
+            local propModel = joaat(Config.UnloadPropModel or 'prop_indus_pumps_01')
+            targetProp = GetClosestObjectOfType(centralCoords.x, centralCoords.y, centralCoords.z, 5.0, propModel, false, false, false)
+        end
+
         print("[CDN-FUEL] Debug: targetProp encontrado? " .. tostring(targetProp ~= nil))
         if not targetProp or not DoesEntityExist(targetProp) then 
             print("[CDN-FUEL] Erro: Objeto do bocal não encontrado para o posto " .. stationId)
+            isProcessing = false
             return 
         end
 
@@ -554,9 +735,21 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         -- Start Sound
         TriggerServerEvent("InteractSound_SV:PlayOnSource", "refuel", 0.3)
 
-        -- Attach Nozzle to Prop
+        -- Attach Nozzle to Prop (Check for Aviation Offsets)
+        local attachData = Config.UnloadNozzleAttachment or { pos = vec3(0.0, 0.0, 1.1), rot = vec3(0.0, 0.0, 0.0) }
+        
+        -- Check if it's an Aviation Pump
+        local modelHash = GetEntityModel(targetProp)
+        for modelName, data in pairs(Config.AviationPumpOffsets) do
+            if joaat(modelName) == modelHash then
+                attachData = data.unload
+                if Config.FuelDebug then print("[CDN-FUEL] Using Aviation Unload Offset for model: " .. modelName) end
+                break
+            end
+        end
+
         DetachEntity(hoseNozzle, true, true)
-        AttachEntityToEntity(hoseNozzle, targetProp, 0, 0.0, 0.0, 1.1, 0.0, 0.0, 0.0, false, false, false, false, 2, true)
+        AttachEntityToEntity(hoseNozzle, targetProp, 0, attachData.pos.x, attachData.pos.y, attachData.pos.z, attachData.rot.x, attachData.rot.y, attachData.rot.z, false, false, false, false, 2, true)
         
         local success = false
         if Config.Ox.Progress then
@@ -601,11 +794,34 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
             -- Nozzle stays plugged into the prop, rope stays stretched from trailer to prop
             -- Rope is only removed when the player returns it to the trailer (RemoveHose)
             
+            -- Nozzle stays plugged into the prop, rope stays stretched from trailer to prop
+            -- Rope is only removed when the player returns it to the trailer (RemoveHose)
+            
             -- Add Target on the prop: 'Pegar Mangueira de Volta'
-            local stationPropData = StationProps[ReservePickupData.location]
-            local stationProp = stationPropData and stationPropData.unloadProp
-            if stationProp then
-                AddTargetEntity(stationProp, {
+            local location = ReservePickupData.location
+            local sData = Config.GasStations[location]
+            local sProps = StationProps[location]
+            local targetProp = sProps and sProps.unloadProp
+            
+            if sData and sData.type == 'air' and sProps and sProps.pumps then
+                local pCoords = GetEntityCoords(ped)
+                local closestDist = -1
+                for _, pump in ipairs(sProps.pumps) do
+                    local dist = #(pCoords - GetEntityCoords(pump))
+                    if closestDist == -1 or dist < closestDist then
+                        closestDist = dist
+                        targetProp = pump
+                    end
+                end
+            elseif sData and sData.type == 'boat_platform' and Config.MaritimePlatform.CentralUnloadCoords then
+                -- For boat platforms, the target prop is the global central hub, not a local StationProp
+                local centralCoords = Config.MaritimePlatform.CentralUnloadCoords
+                local propModel = joaat(Config.UnloadPropModel or 'prop_indus_pumps_01')
+                targetProp = GetClosestObjectOfType(centralCoords.x, centralCoords.y, centralCoords.z, 5.0, propModel, false, false, false)
+            end
+
+            if targetProp then
+                AddTargetEntity(targetProp, {
                     options = {
                         {
                             type = "client",
@@ -648,6 +864,13 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         if data.reservePrice then CurrentReservePrice = data.reservePrice end
         if data.loyaltyLevel then CurrentLoyaltyLevel = data.loyaltyLevel end
         if data.stockLevel then CurrentStockLevel = data.stockLevel end
+        if data.electricManagement then
+            if data.electricManagement.debt ~= nil then CurrentElectricDebt = data.electricManagement.debt end
+            if data.electricManagement.loyaltyLevel ~= nil then CurrentElectricLoyalty = data.electricManagement.loyaltyLevel end
+            if data.electricManagement.status ~= nil then CurrentElectricStatus = data.electricManagement.status end
+            if data.electricManagement.consumed ~= nil then CurrentElectricConsumed = data.electricManagement.consumed end
+            if data.electricManagement.billDue ~= nil then CurrentElectricBillDue = data.electricManagement.billDue end
+        end
 
         SendNUIMessage({
             action = "updateData",
@@ -692,7 +915,17 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                                 TriggerEvent('cdn-fuel:station:client:grabHoseFromTrailer')
                             end,
                             canInteract = function()
-                                return MissionStarted and not fuelUnloaded and not holdingHose and inGasStation and CurrentLocation == ReservePickupData.location
+                                if not MissionStarted or fuelUnloaded or holdingHose then return false end
+                                
+                                local station = Config.GasStations[ReservePickupData.location]
+                                if station and station.type == 'boat_platform' and Config.MaritimePlatform.CentralUnloadCoords then
+                                    local ped = PlayerPedId()
+                                    local pedCoords = GetEntityCoords(ped)
+                                    local dist = #(pedCoords - vector3(Config.MaritimePlatform.CentralUnloadCoords.x, Config.MaritimePlatform.CentralUnloadCoords.y, Config.MaritimePlatform.CentralUnloadCoords.z))
+                                    return dist < 40.0
+                                else
+                                    return inGasStation and CurrentLocation == ReservePickupData.location
+                                end
                             end
                         },
                     },
@@ -765,9 +998,14 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                     if not alreadyHasTruck then
                         if not fuelUnloaded then
                             local station = Config.GasStations[ReservePickupData.location]
-                            if station and station.pedcoords then
-                                SetNewWaypoint(station.pedcoords.x, station.pedcoords.y)
-                                SetUseWaypointAsDestination(true)
+                            if station then
+                                if station.type == 'boat_platform' and Config.MaritimePlatform.CentralUnloadCoords then
+                                    SetNewWaypoint(Config.MaritimePlatform.CentralUnloadCoords.x, Config.MaritimePlatform.CentralUnloadCoords.y)
+                                    SetUseWaypointAsDestination(true)
+                                elseif station.pedcoords then
+                                    SetNewWaypoint(station.pedcoords.x, station.pedcoords.y)
+                                    SetUseWaypointAsDestination(true)
+                                end
                             end
                         end
                         alreadyHasTruck = true
@@ -1343,7 +1581,21 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                         stockLevel = CurrentStockLevel,
                         upgrades = upgrades,
                         loyaltyLevel = CurrentLoyaltyLevel or 0,
-                        loyaltyUpgrades = loyaltyUpgrades
+                        loyaltyUpgrades = loyaltyUpgrades,
+                        stationType = Config.GasStations[location].type or 'car',
+                        fuelLabel = (Config.GasStations[location].type == 'air' and Config.AviationFuelLabel) or "Gasolina",
+                        -- Electric Management Data
+                        electricManagement = {
+                            enabled = Config.ElectricManagement.Enabled,
+                            consumed = CurrentElectricConsumed or 0,
+                            debt = CurrentElectricDebt or 0,
+                            loyaltyLevel = CurrentElectricLoyalty or 0,
+                            status = CurrentElectricStatus or 1,
+                            billDue = CurrentElectricBillDue or "N/A",
+                            pricePerKwh = Config.ElectricManagement.KwhPriceForOwners,
+                            gracePeriod = Config.ElectricManagement.GracePeriodDays,
+                            loyaltyPlans = Config.ElectricManagement.LoyaltyPlans
+                        }
                     }
                 })
                 SetNuiFocus(true, true)
@@ -1862,6 +2114,19 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         cb('ok')
     end)
 
+    -- Electric Management Callbacks
+    RegisterNUICallback('manage:payElectricBill', function(data, cb)
+        if not CurrentLocation then return end
+        TriggerServerEvent('cdn-fuel:server:electric:payBill', CurrentLocation)
+        cb('ok')
+    end)
+
+    RegisterNUICallback('manage:buyElectricLoyalty', function(data, cb)
+        if not CurrentLocation then return end
+        TriggerServerEvent('cdn-fuel:server:electric:buyLoyalty', CurrentLocation, data.level)
+        cb('ok')
+    end)
+
     -- StationProps is declared at the top of this block (line ~16)
 
     AddEventHandler('onResourceStop', function(resource)
@@ -1876,6 +2141,19 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                     end
                 end
             end
+        end
+    end)
+
+    RegisterNetEvent('cdn-fuel:client:deleteStationProps', function(stationId)
+        if StationProps[stationId] then
+            if StationProps[stationId].ped then DeleteEntity(StationProps[stationId].ped) end
+            if StationProps[stationId].unloadProp then DeleteEntity(StationProps[stationId].unloadProp) end
+            if StationProps[stationId].debugNozzle then DeleteEntity(StationProps[stationId].debugNozzle) end
+            if StationProps[stationId].charger then DeleteEntity(StationProps[stationId].charger) end
+            if StationProps[stationId].pumps then
+                for _, p in ipairs(StationProps[stationId].pumps) do DeleteEntity(p) end
+            end
+            StationProps[stationId] = nil
         end
     end)
 
@@ -1931,7 +2209,28 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                 },
                 distance = 3.0
             })
-            if Config.FuelDebug then print("[CDN-FUEL] Persistent Depot Pump spawned.") end
+            if Config.FuelDebug then 
+                print("[CDN-FUEL] Persistent Depot Pump spawned.") 
+                -- Debug Marker for Rope Origin
+                CreateThread(function()
+                    while true do
+                        local sleep = 1500
+                        if Config.FuelDebug and depotLoadProp and DoesEntityExist(depotLoadProp) then
+                            local pedCoords = GetEntityCoords(PlayerPedId())
+                            local propCoords = GetEntityCoords(depotLoadProp)
+                            if #(pedCoords - propCoords) < 50.0 then
+                                sleep = 0
+                                local offset = Config.TankerLoadRopeOffset or vec3(0.0, 0.0, 2.1)
+                                local worldCoords = GetOffsetFromEntityInWorldCoords(depotLoadProp, offset.x, offset.y, offset.z)
+                                -- Draw Sphere Marker
+                                local debugColor = HexToRGB(Config.DebugColor or "#FF00FF")
+                                DrawMarker(28, worldCoords.x, worldCoords.y, worldCoords.z, 0, 0, 0, 0, 0, 0, 0.1, 0.1, 0.1, debugColor.r, debugColor.g, debugColor.b, 200, false, false, 2, false, nil, nil, false)
+                            end
+                        end
+                        Wait(sleep)
+                    end
+                end)
+            end
         end
     end)
 end -- For Config.PlayerOwnedGasStationsEnabled check, don't remove!

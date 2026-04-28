@@ -33,7 +33,7 @@ local Translations = {
     vehicle_is_damaged = "O veículo está muito danificado para abastecer!",
     vehicle_too_far = "Você está muito longe para abastecer este veículo!",
     inside_vehicle = "Você não pode abastecer de dentro do veículo!",
-    you_are_discount_eligible = "Se você entrar em serviço, poderá receber um desconto de "..Config.EmergencyServicesDiscount['discount'].."%!",
+    you_are_discount_eligible = "Se você entrar em serviço, poderá receber um desconto no combustível!",
     no_fuel = "Sem combustível..",
 
     -- Electric
@@ -247,5 +247,19 @@ local Translations = {
     syphon_kit_cannot_fit_2 = " Litros.",
     syphon_not_enough_gas = "Você não tem gasolina suficiente para abastecer tanto!",
     syphon_dispatch_string = "(10-90) - Roubo de Gasolina",
+
+    -- Electric Management (Dono)
+    ev_manage_header = "Gestão de Energia Elétrica",
+    ev_manage_consumed = "Consumo Atual: ",
+    ev_manage_debt = "Dívida Pendente: R$",
+    ev_manage_bill_due = "Vencimento da Fatura: ",
+    ev_manage_status = "Status do Carregador: ",
+    ev_manage_status_active = "ATIVO",
+    ev_manage_status_disabled = "DESATIVADO (Dívida)",
+    ev_manage_pay_bill = "Pagar Fatura Elétrica",
+    ev_manage_loyalty_upgrade = "Melhorar Plano de Energia",
+    ev_manage_kwh_price = "Preço por kWh (Custo): R$",
+    ev_manage_grace_period = "Período de Carência: ",
+    ev_manage_days = " dias",
 }
 Lang = Locale:new({phrases = Translations, warnOnMissing = true})

@@ -6,6 +6,7 @@ import FuelManagement from './FuelManagement';
 import Settings from './Settings';
 import Analytics from './Analytics';
 import Upgrades from './Upgrades';
+import ElectricManagement from './ElectricManagement';
 import { fetchNui } from '../../utils/nui';
 
 interface UpgradeTier {
@@ -23,6 +24,12 @@ interface LoyaltyTier {
     color?: string;
 }
 
+interface LoyaltyPlan {
+    label: string;
+    price: number;
+    discount: number;
+}
+
 interface ManagementData {
     balance: number;
     fuelStock: number;
@@ -37,6 +44,17 @@ interface ManagementData {
     upgrades: UpgradeTier[];
     loyaltyLevel: number;
     loyaltyUpgrades: LoyaltyTier[];
+    electricManagement?: {
+        enabled: boolean;
+        consumed: number;
+        debt: number;
+        loyaltyLevel: number;
+        status: number | boolean;
+        billDue: string;
+        pricePerKwh: number;
+        gracePeriod: number;
+        loyaltyPlans: Record<number, LoyaltyPlan>;
+    };
 }
 
 interface ManagementProps {
@@ -104,6 +122,13 @@ const Management: React.FC<ManagementProps> = ({ data, onClose }) => {
                                onAction={handleAction} 
                           />
                       )}
+
+                      {activeTab === 'electric' && localData.electricManagement && (
+                          <ElectricManagement 
+                               data={localData.electricManagement}
+                               onAction={handleAction}
+                          />
+                      )}
                       
                       {activeTab === 'settings' && (
                           <Settings stationName={localData.stationName} logo={localData.logo} onAction={handleAction} />
@@ -111,11 +136,14 @@ const Management: React.FC<ManagementProps> = ({ data, onClose }) => {
 
                       {activeTab === 'upgrades' && (
                           <Upgrades 
-                               currentLevel={localData.stockLevel} 
-                               upgrades={localData.upgrades} 
-                               loyaltyLevel={localData.loyaltyLevel}
-                               loyaltyUpgrades={localData.loyaltyUpgrades}
-                               onAction={handleAction} 
+                                currentLevel={localData.stockLevel} 
+                                upgrades={localData.upgrades}
+                                loyaltyLevel={localData.loyaltyLevel}
+                                loyaltyUpgrades={localData.loyaltyUpgrades}
+                                electricLoyaltyLevel={localData.electricManagement?.loyaltyLevel || 0}
+                                electricLoyaltyPlans={localData.electricManagement?.loyaltyPlans || {}}
+                                pricePerKwh={localData.electricManagement?.pricePerKwh || 0}
+                                onAction={handleAction} 
                           />
                       )}
 
