@@ -55,6 +55,7 @@ interface ManagementData {
         gracePeriod: number;
         loyaltyPlans: Record<number, LoyaltyPlan>;
     };
+    stationType?: string;
 }
 
 interface ManagementProps {
@@ -102,7 +103,13 @@ const Management: React.FC<ManagementProps> = ({ data, onClose }) => {
                       <span className="material-symbols-outlined">close</span>
                   </button>
 
-                  <Sidebar activeTab={activeTab} onTabChange={setActiveTab} stationName={localData.stationName} logo={localData.logo} />
+                  <Sidebar 
+                    activeTab={activeTab} 
+                    onTabChange={setActiveTab} 
+                    stationName={localData.stationName} 
+                    logo={localData.logo} 
+                    stationType={localData.stationType}
+                  />
                   
                    <div className="flex-1 h-full bg-dashboard-bg relative">
                         {activeTab === 'dashboard' && <DashboardHome data={localData} />}
@@ -143,6 +150,7 @@ const Management: React.FC<ManagementProps> = ({ data, onClose }) => {
                                 electricLoyaltyLevel={localData.electricManagement?.loyaltyLevel || 0}
                                 electricLoyaltyPlans={localData.electricManagement?.loyaltyPlans || {}}
                                 pricePerKwh={localData.electricManagement?.pricePerKwh || 0}
+                                stationType={localData.stationType}
                                 onAction={handleAction} 
                           />
                       )}

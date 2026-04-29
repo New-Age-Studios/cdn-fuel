@@ -29,10 +29,11 @@ interface UpgradesProps {
     electricLoyaltyLevel: number;
     electricLoyaltyPlans: Record<number, LoyaltyPlan>;
     pricePerKwh: number;
+    stationType?: string;
     onAction: (action: string, data?: any) => void;
 }
 
-const Upgrades: React.FC<UpgradesProps> = ({ currentLevel, upgrades, loyaltyLevel, loyaltyUpgrades, electricLoyaltyLevel, electricLoyaltyPlans, pricePerKwh, onAction }) => {
+const Upgrades: React.FC<UpgradesProps> = ({ currentLevel, upgrades, loyaltyLevel, loyaltyUpgrades, electricLoyaltyLevel, electricLoyaltyPlans, pricePerKwh, stationType, onAction }) => {
     
     // Helper to generate variations from the base color
     const getColorsFromHex = (hex: string = '#3b82f6') => {
@@ -187,7 +188,7 @@ const Upgrades: React.FC<UpgradesProps> = ({ currentLevel, upgrades, loyaltyLeve
             </div>
 
             {/* Section 3: Electric Loyalty Plans */}
-            {electricLoyaltyPlans && (
+            {electricLoyaltyPlans && stationType !== 'air' && (
                 <div className="flex flex-col gap-6">
                     <div>
                         <h2 className="text-3xl font-bold text-primary mb-2">Plano de Fidelidade Elétrica</h2>

@@ -6,6 +6,7 @@ interface SidebarProps {
   onTabChange: (tab: string) => void;
   stationName: string;
   logo?: string;
+  stationType?: string;
 }
 
 const Sidebar: React.FC<SidebarProps> = ({
@@ -13,6 +14,7 @@ const Sidebar: React.FC<SidebarProps> = ({
   onTabChange,
   stationName,
   logo,
+  stationType,
 }) => {
   const { theme, toggleTheme } = useTheme();
   const [imgError, setImgError] = useState(false);
@@ -22,7 +24,7 @@ const Sidebar: React.FC<SidebarProps> = ({
     setImgError(false);
   }, [logo]);
 
-  const menuItems = [
+  let menuItems = [
     { id: "dashboard", label: "Dashboard", icon: "dashboard" },
     { id: "analytics", label: "Estatísticas", icon: "bar_chart" },
     { id: "finance", label: "Financeiro", icon: "account_balance_wallet" },
@@ -31,6 +33,11 @@ const Sidebar: React.FC<SidebarProps> = ({
     { id: "upgrades", label: "Upgrades", icon: "upgrade" },
     { id: "settings", label: "Configurações", icon: "settings" },
   ];
+
+  // Hide electric management for air stations
+  if (stationType === 'air') {
+    menuItems = menuItems.filter(item => item.id !== 'electric');
+  }
 
   return (
     <div className="w-64 h-[85vh] bg-dashboard-card border-r border-border-color flex flex-col rounded-l-2xl">

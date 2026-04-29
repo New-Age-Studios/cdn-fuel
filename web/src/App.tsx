@@ -99,6 +99,7 @@ interface ManagementData {
   upgrades: UpgradeTier[];
   loyaltyLevel: number;
   loyaltyUpgrades: LoyaltyTier[];
+  stationType: string;
 }
 
 const App: React.FC = () => {
