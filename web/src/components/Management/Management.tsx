@@ -33,8 +33,12 @@ interface LoyaltyPlan {
 interface ManagementData {
     balance: number;
     fuelStock: number;
+    dieselStock: number;
+    ethanolStock: number;
     maxStock: number;
     fuelPrice: number;
+    dieselPrice: number;
+    ethanolPrice: number;
     ownerName: string;
     stationName: string;
     reservePrice?: number;
@@ -122,9 +126,17 @@ const Management: React.FC<ManagementProps> = ({ data, onClose }) => {
                       
                       {activeTab === 'fuel' && (
                           <FuelManagement 
-                               stock={localData.fuelStock} 
+                               stocks={{
+                                   gasoline: localData.fuelStock,
+                                   diesel: localData.dieselStock,
+                                   ethanol: localData.ethanolStock
+                               }}
                                maxStock={localData.maxStock} 
-                               price={localData.fuelPrice} 
+                               prices={{
+                                   gasoline: localData.fuelPrice,
+                                   diesel: localData.dieselPrice,
+                                   ethanol: localData.ethanolPrice
+                               }}
                                reservePrice={localData.reservePrice || 2.0}
                                onAction={handleAction} 
                           />

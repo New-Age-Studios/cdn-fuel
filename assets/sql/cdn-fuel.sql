@@ -11,8 +11,12 @@ CREATE TABLE IF NOT EXISTS `fuel_stations` (
   `location` int(11) NOT NULL,
   `owned` int(11) DEFAULT NULL,
   `owner` varchar(50) DEFAULT NULL,
-  `fuel` int(11) DEFAULT NULL,
-  `fuelprice` int(11) DEFAULT NULL,
+  `fuel` int(11) DEFAULT NULL, -- Estoque de Gasolina
+  `diesel` int(11) DEFAULT 0, -- Estoque de Diesel
+  `ethanol` int(11) DEFAULT 0, -- Estoque de Etanol
+  `fuelprice` int(11) DEFAULT NULL, -- Preço Gasolina
+  `dieselprice` int(11) DEFAULT NULL, -- Preço Diesel
+  `ethanolprice` int(11) DEFAULT NULL, -- Preço Etanol
   `balance` int(255) DEFAULT NULL,
   `label` varchar(255) DEFAULT NULL,
   `shutoff` tinyint(1) DEFAULT 0,
@@ -39,6 +43,17 @@ CREATE TABLE IF NOT EXISTS `fuel_stations` (
   `electric_debt_since` timestamp NULL DEFAULT NULL, -- Data em que a dívida elétrica começou (para carência)
   `is_purchasable` tinyint(1) DEFAULT 1, -- 1: Comprável, 0: Não comprável
   PRIMARY KEY (`location`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+--
+-- Table structure for `fuel_vehicle_mappings`
+--
+
+CREATE TABLE IF NOT EXISTS `fuel_vehicle_mappings` (
+  `name` varchar(50) NOT NULL,
+  `fuel_type` varchar(20) NOT NULL DEFAULT 'gasoline',
+  `is_model` tinyint(1) DEFAULT 0,
+  PRIMARY KEY (`name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 --

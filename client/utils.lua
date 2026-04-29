@@ -1,3 +1,102 @@
+local QBCore = exports[Config.Core]:GetCoreObject()
+
+props = {
+	"prop_gas_pump_1d",
+	"prop_gas_pump_1a",
+	"prop_gas_pump_1b",
+	"prop_gas_pump_1c",
+	"prop_vintage_pump",
+	"prop_gas_pump_old2",
+	"prop_gas_pump_old3",
+	"denis3d_prop_gas_pump", -- Gabz Ballas Gas Station Pump.
+	"prop_gas_tank_02a",    -- Aviation Tank
+}
+
+function GetClosestPump(coords, isElectric)
+	if isElectric then
+		local electricPump = nil
+		electricPump = GetClosestObjectOfType(coords.x, coords.y, coords.z, 3.0, joaat(Config.ElectricChargerModel), true, true, true)
+		local pumpCoords = GetEntityCoords(electricPump)
+		return pumpCoords, electricPump
+	else
+		local pump = nil
+		local pumpCoords
+		for i = 1, #props, 1 do
+			local currentPumpModel = props[i]
+			pump = GetClosestObjectOfType(coords.x, coords.y, coords.z, 3.0, joaat(currentPumpModel), true, true, true)
+			pumpCoords = GetEntityCoords(pump)
+			if pump ~= 0 then break end
+		end
+		return pumpCoords, pump
+	end
+end
+
+-- Wrong Fuel Damage Thread
+CreateThread(function()
+    while true do
+        local sleep = 2000
+        local ped = PlayerPedId()
+        local vehicle = GetVehiclePedIsIn(ped, false)
+        
+        if vehicle ~= 0 and GetPedInVehicleSeat(vehicle, -1) == ped then
+            local state = Entity(vehicle).state
+            if state.wrong_fuel then
+                sleep = 1000
+                local engineHealth = GetVehicleEngineHealth(vehicle)
+                if Config.FuelDebug then print("[DEBUG] VEHICLE HAS WRONG FUEL! Engine Health: " .. engineHealth) end
+                if engineHealth > 100.0 then
+                    local damage = Config.WrongFuelDamage and Config.WrongFuelDamage.DamagePerSecond or 5.0
+                    SetVehicleEngineHealth(vehicle, engineHealth - damage) -- Damage engine
+                    if engineHealth < 400.0 then
+                        SetVehicleEngineOn(vehicle, false, true, true) -- Start failing
+                    end
+                    if Config.FuelDebug then print("[DEBUG] Wrong Fuel Damage: Engine Health = " .. engineHealth) end
+                end
+            end
+        end
+        Wait(sleep)
+    end
+end)
+
+RegisterCommand('testwrongfuel', function()
+    local ped = PlayerPedId()
+    local vehicle = GetVehiclePedIsIn(ped, false)
+    if vehicle ~= 0 then
+        Entity(vehicle).state:set('wrong_fuel', true, true)
+        QBCore.Functions.Notify("DEBUG: Estado 'wrong_fuel' aplicado ao veículo!", "success")
+    else
+        QBCore.Functions.Notify("Entre em um veículo primeiro!", "error")
+    end
+end, false)
+
+-- Vehicle Entry Debug & State Sync
+local lastVeh = nil
+CreateThread(function()
+    while true do
+        local ped = PlayerPedId()
+        local vehicle = GetVehiclePedIsIn(ped, false)
+        
+        if vehicle ~= 0 and vehicle ~= lastVeh then
+            lastVeh = vehicle
+            local model = GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)):upper()
+            local class = GetVehicleClass(vehicle)
+            
+            QBCore.Functions.TriggerCallback('cdn-fuel:server:GetVehicleFuelType', function(fuelType)
+                local hasWrongFuel = Entity(vehicle).state.wrong_fuel
+                local statusMsg = hasWrongFuel and "STATUS: [ERRO DE COMBUSTÍVEL]" or "STATUS: [OK]"
+                
+                if Config.FuelDebug then
+                    QBCore.Functions.Notify(string.format("VEÍCULO: %s | TIPO: %s | %s", model, fuelType, statusMsg), "primary", 5000)
+                    print(string.format("[DEBUG] Entry: Model=%s, Class=%s, FuelType=%s, WrongFuel=%s", model, class, fuelType, tostring(hasWrongFuel)))
+                end
+            end, model, class)
+        elseif vehicle == 0 then
+            lastVeh = nil
+        end
+        Wait(2000)
+    end
+end)
+
 function GetFuel(vehicle)
 	return DecorGetFloat(vehicle, Config.FuelDecor)
 end

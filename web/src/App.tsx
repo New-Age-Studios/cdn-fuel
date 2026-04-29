@@ -4,8 +4,10 @@ import FuelSelector from "./components/FuelSelector";
 import PaymentConfirm from "./components/PaymentConfirm";
 import TransactionSummary from "./components/TransactionSummary";
 import Management from "./components/Management/Management";
+import FuelMappingAdmin from "./components/Management/FuelMappingAdmin";
 import InteractionMenu from "./components/InteractionMenu";
 import StationPurchase from "./components/StationPurchase";
+import FuelTypeSelector from "./components/FuelTypeSelector";
 import { fetchNui, debugData } from "./utils/nui";
 
 // Mock data for development
@@ -25,9 +27,13 @@ debugData([
     data: {
       stationName: "Snow Posto",
       balance: 57500,
-      fuelStock: 12450,
-      maxStock: 20000,
-      fuelPrice: 5.5,
+      fuelStock: 0,
+      dieselStock: 0,
+      ethanolStock: 0,
+      maxStock: 0,
+      fuelPrice: 0,
+      dieselPrice: 0,
+      ethanolPrice: 0,
       ownerName: "John Doe",
       stockLevel: 1,
       upgrades: [
@@ -90,8 +96,12 @@ interface LoyaltyTier {
 interface ManagementData {
   balance: number;
   fuelStock: number;
+  dieselStock: number;
+  ethanolStock: number;
   maxStock: number;
   fuelPrice: number;
+  dieselPrice: number;
+  ethanolPrice: number;
   ownerName: string;
   stationName: string;
   logo?: string;
@@ -102,11 +112,19 @@ interface ManagementData {
   stationType: string;
 }
 
+interface MappingData {
+  mappings: any[];
+  classes: string[];
+}
+
 const App: React.FC = () => {
   const [visible, setVisible] = useState(false);
   const [step, setStep] = useState<
-    "selector" | "payment" | "summary" | "management"
+    "fuelType" | "selector" | "payment" | "summary" | "management" | "mappingAdmin"
   >("payment");
+
+  const [availableFuels, setAvailableFuels] = useState<any[]>([]);
+  const [selectedFuel, setSelectedFuel] = useState<any>(null);
 
   const [fuelData, setFuelData] = useState({
     maxFuel: 60,
@@ -125,6 +143,7 @@ const App: React.FC = () => {
   const [managementData, setManagementData] = useState<ManagementData | null>(
     null,
   );
+  const [mappingData, setMappingData] = useState<MappingData>({ mappings: [], classes: [] });
 
   const [selectedAmount, setSelectedAmount] = useState(0);
   const [selectedMethod, setSelectedMethod] = useState<"cash" | "bank" | null>(
@@ -147,6 +166,13 @@ const App: React.FC = () => {
 
       if (action === "open") {
         if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+        const fuels = data.availableFuels || [
+          { id: 'gasoline', label: 'Gasolina', price: data.price || 3, icon: 'local_gas_station', color: '#FFA500', description: 'Combustível padrão para a maioria dos veículos de passeio.' },
+          { id: 'diesel', label: 'Diesel', price: data.dieselPrice || 4, icon: 'rv_hookup', color: '#555555', description: 'Ideal para SUVs, caminhões e veículos de carga pesada.' },
+          { id: 'ethanol', label: 'Etanol', price: data.ethanolPrice || 2, icon: 'eco', color: '#008000', description: 'Combustível renovável de alto desempenho para carros esportivos.' }
+        ];
+
+        setAvailableFuels(fuels);
         setFuelData({
           ...data,
           type: data.type || "fuel",
@@ -157,25 +183,44 @@ const App: React.FC = () => {
           jerryCans: data.jerryCans || [],
         });
 
-        if (data.type === "jerrycanRefuel" || data.type === "jerrycanRefill") {
+        if (data.type === "fuel" || data.type === "jerrycanRefill" || data.type === "jerrycan") {
+          setStep("fuelType");
+          setSelectedMethod(null);
+        } else if (data.type === "jerrycanRefuel") {
           setStep("selector");
-          if (data.type === "jerrycanRefill") {
-            setSelectedMethod("cash"); // Default to cash for pump refill
-          } else {
-            setSelectedMethod(null);
-          }
+          setSelectedMethod(null);
         } else {
           setStep("payment");
           setSelectedMethod(null);
         }
 
         setSelectedAmount(0);
+        setSelectedFuel(null);
         setSelectedJerryCanIndex(0);
         setVisible(true);
       } else if (action === "openManagement") {
         if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
-        setManagementData(data);
+        setManagementData({
+          ...data,
+          fuelStock: data.fuelStock,
+          dieselStock: data.dieselStock || 0,
+          ethanolStock: data.ethanolStock || 0,
+          maxStock: data.maxStock,
+          fuelPrice: data.fuelPrice,
+          dieselPrice: data.dieselPrice || 0,
+          ethanolPrice: data.ethanolPrice || 0,
+          ownerName: data.ownerName,
+        });
         setStep("management");
+        setShowInteraction(false);
+        setVisible(true);
+      } else if (action === "openMappingAdmin") {
+        if (closeTimeoutRef.current) clearTimeout(closeTimeoutRef.current);
+        setMappingData({
+          mappings: data.mappings || [],
+          classes: data.classes || []
+        });
+        setStep("mappingAdmin");
         setShowInteraction(false);
         setVisible(true);
       } else if (action === "updateData") {
@@ -258,6 +303,12 @@ const App: React.FC = () => {
     }, 200);
   };
 
+  const handleFuelTypeSelect = (fuel: any) => {
+    setSelectedFuel(fuel);
+    setFuelData(prev => ({ ...prev, price: fuel.price }));
+    setStep("payment");
+  };
+
   const handlePaymentSelect = (method: "cash" | "bank") => {
     setSelectedMethod(method);
 
@@ -270,6 +321,18 @@ const App: React.FC = () => {
     setStep("selector");
   };
 
+  const handleSaveMapping = (mapping: any) => {
+    fetchNui("saveMapping", mapping).then((updatedMappings: any) => {
+      setMappingData(prev => ({ ...prev, mappings: updatedMappings }));
+    });
+  };
+
+  const handleDeleteMapping = (name: string) => {
+    fetchNui("deleteMapping", { name }).then((updatedMappings: any) => {
+      setMappingData(prev => ({ ...prev, mappings: updatedMappings }));
+    });
+  };
+
   const handleFuelSelect = (amount: number) => {
     if (amount <= 0) return;
     setSelectedAmount(amount);
@@ -280,6 +343,8 @@ const App: React.FC = () => {
     fetchNui("pay", {
       amount: selectedAmount,
       method: selectedMethod,
+      fuelType: selectedFuel?.id || "gasoline",
+      price: fuelData.price,
       type: fuelData.type,
       syphonData: fuelData.type === "syphon" ? fuelData.syphonData : undefined,
       jerryCanData: fuelData.type === "jerrycanRefill" 
@@ -344,6 +409,14 @@ const App: React.FC = () => {
       <div className="relative z-10 w-full flex justify-center">
         {step === "management" && managementData ? (
           <Management data={managementData} onClose={handleClose} />
+        ) : step === "mappingAdmin" ? (
+          <FuelMappingAdmin 
+              mappings={mappingData.mappings}
+              classes={mappingData.classes}
+              onSave={handleSaveMapping}
+              onDelete={handleDeleteMapping}
+              onClose={handleClose}
+          />
         ) : showInteraction && interactionData ? (
           <InteractionMenu
             stationName={interactionData.stationName}
@@ -362,6 +435,14 @@ const App: React.FC = () => {
           />
         ) : (
           <>
+            {step === "fuelType" && (
+                <FuelTypeSelector 
+                    availableFuels={availableFuels}
+                    stationName={fuelData.stationName}
+                    onSelect={handleFuelTypeSelect}
+                    onClose={handleClose}
+                />
+            )}
             {step === "payment" && (
               <PaymentConfirm
                 amount={0}
@@ -372,7 +453,7 @@ const App: React.FC = () => {
                 stationName={fuelData.stationName}
                 logo={fuelData.logo}
                 onPay={handlePaymentSelect}
-                onBack={handleClose}
+                onBack={fuelData.type === "fuel" || fuelData.type === "jerrycanRefill" ? () => setStep("fuelType") : handleClose}
               />
             )}
             {step === "selector" && (
@@ -396,7 +477,7 @@ const App: React.FC = () => {
                 onConfirm={handleFuelSelect}
                 onClose={
                   fuelData.type === "jerrycanRefuel" || fuelData.type === "jerrycanRefill"
-                    ? handleClose
+                    ? (fuelData.type === "jerrycanRefill" ? () => setStep("payment") : handleClose)
                     : handleBackToPayment
                 }
               />

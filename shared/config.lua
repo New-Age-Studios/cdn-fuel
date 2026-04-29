@@ -99,9 +99,53 @@ Config.PumpRopeOffsets = {              -- Pontos de origem da mangueira por mod
 -------------------------------------------------------------------------------
 -- [ SEÇÃO 4: SISTEMA DE AVIAÇÃO (JET A) ]
 -------------------------------------------------------------------------------
-Config.AviationFuelEnabled = true       -- Habilita o sistema de combustível JET A.
-Config.AviationFuelLabel = "JET A-1"    -- Nome exibido na interface para aeronaves.
-Config.AviationReservesPrice = 12       -- Preço por litro que o dono paga no depósito.
+Config.AviationFuelEnabled = true       -- Habilita o sistema de combustível Jet A para aeronaves.
+Config.AviationCostMultiplier = 8       -- Preço base por litro (Aviation).
+Config.AviationJerryCanCap = 50         -- Capacidade máxima do galão de aviação (Litros).
+
+-------------------------------------------------------------------------------
+-- [ SEÇÃO 5: MÚLTIPLOS TIPOS DE COMBUSTÍVEL ]
+-------------------------------------------------------------------------------
+Config.FuelTypes = {
+    ['gasoline'] = { label = "Gasolina", price = 3, color = "#FFA500" },
+    ['diesel'] = { label = "Diesel", price = 4, color = "#555555" },
+    ['ethanol'] = { label = "Etanol", price = 2, color = "#008000" },
+    ['aviation'] = { label = "Jet A-1", price = 8, color = "#0000FF" }
+}
+
+-- Mapeamento padrão de classes para combustível (utilizado se não houver mapeamento no DB)
+Config.ClassFuelDefaults = {
+    [0] = 'gasoline', -- Compacts
+    [1] = 'gasoline', -- Sedans
+    [2] = 'diesel',   -- SUVs
+    [3] = 'gasoline', -- Coupes
+    [4] = 'gasoline', -- Muscle
+    [5] = 'ethanol',  -- Sports
+    [6] = 'gasoline', -- Sports Classics
+    [7] = 'ethanol',  -- Super
+    [8] = 'gasoline', -- Motorcycles
+    [9] = 'diesel',   -- Off-road
+    [10] = 'diesel',  -- Industrial
+    [11] = 'diesel',  -- Utility
+    [12] = 'diesel',  -- Vans
+    [13] = 'gasoline', -- Cycles
+    [14] = 'gasoline', -- Boats
+    [15] = 'aviation', -- Helicopters
+    [16] = 'aviation', -- Planes
+    [17] = 'diesel',  -- Service
+    [18] = 'diesel',  -- Emergency
+    [19] = 'diesel',  -- Military
+    [20] = 'diesel',  -- Commercial
+    [21] = 'gasoline', -- Trains
+}
+
+-- Configurações de Dano por Combustível Incorreto
+Config.WrongFuelDamage = {
+    Enabled = true,
+    DamagePerSecond = 15.0,      -- Dano ao motor por segundo (Progressivo)
+    SmokeThreshold = 400,       -- Vida do motor abaixo da qual começa a sair fumaça (0-1000)
+    StallChance = 5,            -- Chance de o motor apagar a cada tick de dano (0-100)
+}
 Config.AviationCostMultiplier = 15      -- Preço de venda padrão por litro (se não houver dono).
 Config.AviationPumpOffsets = {
     ["prop_gas_tank_02a"] = {
@@ -119,6 +163,31 @@ Config.AviationJerryCanCap = 50         -- Capacidade MÁXIMA que o galão de av
 Config.AviationVehicleClasses = {
     [15] = true, -- Helicopters
     [16] = true, -- Planes
+}
+
+Config.VehicleClasses = {
+    [0] = "COMPACTS",
+    [1] = "SEDANS",
+    [2] = "SUVS",
+    [3] = "COUPES",
+    [4] = "MUSCLE",
+    [5] = "SPORTS",
+    [6] = "SPORTSCLASSICS",
+    [7] = "SUPER",
+    [8] = "MOTORCYCLES",
+    [9] = "OFFROAD",
+    [10] = "INDUSTRIAL",
+    [11] = "UTILITY",
+    [12] = "VANS",
+    [13] = "CYCLES",
+    [14] = "BOATS",
+    [15] = "HELICOPTERS",
+    [16] = "PLANES",
+    [17] = "SERVICE",
+    [18] = "EMERGENCY",
+    [19] = "MILITARY",
+    [20] = "COMMERCIAL",
+    [21] = "TRAINS",
 }
 
 -------------------------------------------------------------------------------

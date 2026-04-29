@@ -5,17 +5,6 @@ inGasStation = false
 local inBlacklisted = false
 local holdingnozzle = false
 local Stations = {}
-local props = {
-	"prop_gas_pump_1d",
-	"prop_gas_pump_1a",
-	"prop_gas_pump_1b",
-	"prop_gas_pump_1c",
-	"prop_vintage_pump",
-	"prop_gas_pump_old2",
-	"prop_gas_pump_old3",
-	"denis3d_prop_gas_pump", -- Gabz Ballas Gas Station Pump.
-	"prop_gas_tank_02a",    -- Aviation Tank
-}
 local refueling = false
 local GasStationBlips = {} -- Used for managing blips on the client, so labels can be updated.
 local RefuelingType = nil
@@ -63,6 +52,32 @@ if Config.FuelDebug then
 	end, false)
 end
 
+RegisterNetEvent('cdn-fuel:client:OpenMappingAdmin', function()
+    QBCore.Functions.TriggerCallback('cdn-fuel:server:GetMappingAdminData', function(data)
+        SendNUIMessage({
+            action = "openMappingAdmin",
+            data = data
+        })
+        SetNuiFocus(true, true)
+    end)
+end)
+
+RegisterNUICallback('saveMapping', function(data, cb)
+    QBCore.Functions.TriggerCallback('cdn-fuel:server:SaveMapping', function(newMappings)
+        cb(newMappings)
+    end, data)
+end)
+
+RegisterNUICallback('deleteMapping', function(data, cb)
+    QBCore.Functions.TriggerCallback('cdn-fuel:server:DeleteMapping', function(newMappings)
+        cb(newMappings)
+    end, data)
+end)
+
+RegisterCommand('fueladmin', function()
+    TriggerEvent('cdn-fuel:client:OpenMappingAdmin')
+end, true) -- true = admin restricted
+
 -- Global Gas Pump Visual Debug
 if Config.FuelDebug then
 	CreateThread(function()
@@ -102,26 +117,7 @@ if Config.FuelDebug then
 	end)
 end
 
--- Functions
 
-function GetClosestPump(coords, isElectric)
-	if isElectric then
-		local electricPump = nil
-		electricPump = GetClosestObjectOfType(coords.x, coords.y, coords.z, 3.0, joaat(Config.ElectricChargerModel), true, true, true)
-		local pumpCoords = GetEntityCoords(electricPump)
-		return pumpCoords, electricPump
-	else
-		local pump = nil
-		local pumpCoords
-		for i = 1, #props, 1 do
-			local currentPumpModel = props[i]
-			pump = GetClosestObjectOfType(coords.x, coords.y, coords.z, 3.0, joaat(currentPumpModel), true, true, true)
-			pumpCoords = GetEntityCoords(pump)
-			if pump ~= 0 then break end
-		end
-		return pumpCoords, pump
-	end
-end
 
 local function FetchStationInfo(info)
 	if not Config.PlayerOwnedGasStationsEnabled then
@@ -192,6 +188,42 @@ local function HandleFuelConsumption(vehicle)
 		SetFuel(vehicle, GetVehicleFuelLevel(vehicle) - fuelUsage * classMultiplier / 10)
 	end
 end
+
+-- Wrong Fuel Damage Thread
+CreateThread(function()
+    while true do
+        local wait = 5000
+        local ped = PlayerPedId()
+        local vehicle = GetVehiclePedIsIn(ped, false)
+        
+        if vehicle ~= 0 and GetPedInVehicleSeat(vehicle, -1) == ped then
+            local isWrongFuel = Entity(vehicle).state.wrong_fuel
+            if isWrongFuel then
+                wait = Config.WrongFuelDamage.Interval or 5000
+                if GetIsVehicleEngineRunning(vehicle) then
+                    local currentHealth = GetVehicleEngineHealth(vehicle)
+                    if currentHealth > 0 then
+                        local damage = math.random(Config.WrongFuelDamage.Min or 5, Config.WrongFuelDamage.Max or 15) / 10.0
+                        SetVehicleEngineHealth(vehicle, currentHealth - damage)
+                        
+                        -- Visual effects (smoke/stalling)
+                        if currentHealth < 600 then
+                            if math.random(1, 10) > 7 then
+                                SetVehicleEngineCanDegrade(vehicle, true)
+                            end
+                        end
+
+                        if currentHealth < 100 then
+                            SetVehicleEngineOn(vehicle, false, true, true)
+                            QBCore.Functions.Notify("O motor parou devido ao combustível incorreto!", "error")
+                        end
+                    end
+                end
+            end
+        end
+        Wait(wait)
+    end
+end)
 
 local function CanAfford(price, purchasetype)
 	local purchasetype = purchasetype
@@ -900,6 +932,12 @@ RegisterNetEvent('cdn-fuel:client:FinalMenu', function(purchasetype)
         end
     end
 
+    local fuels = {
+        { id = 'gasoline', label = 'Gasolina', price = stationObject and stationObject.fuelprice or Config.CostMultiplier, icon = 'local_gas_station', color = '#FFA500', description = 'Combustível padrão para a maioria dos veículos de passeio.' },
+        { id = 'diesel', label = 'Diesel', price = stationObject and stationObject.dieselprice or (Config.CostMultiplier * 1.2), icon = 'rv_hookup', color = '#555555', description = 'Ideal para SUVs, caminhões e veículos de carga pesada.' },
+        { id = 'ethanol', label = 'Etanol', price = stationObject and stationObject.ethanolprice or (Config.CostMultiplier * 0.8), icon = 'eco', color = '#008000', description = 'Combustível renovável de alto desempenho para carros esportivos.' }
+    }
+
     SetNuiFocus(true, true)
     SendNUIMessage({
         action = "open",
@@ -907,6 +945,8 @@ RegisterNetEvent('cdn-fuel:client:FinalMenu', function(purchasetype)
             maxFuel = maxfuel,
             currentFuel = curfuel,
             price = FuelPrice,
+            type = 'fuel',
+            availableFuels = fuels,
             tax = currentTax,
             discount = activeDiscount,
             stationName = stationLabel,
@@ -966,11 +1006,14 @@ RegisterNetEvent('cdn-fuel:client:SendMenuToServer', function(type)
 end)
 
 RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
+    local amount = data.fuelamounttotal
+    local fuelType = data.fuelType or "gasoline"
+    local purchasetype = data.purchasetype
 	if RefuelingType == nil then
 		FetchStationInfo("all")
 		Wait(100)
 	end
-	local purchasetype, amount, fuelamount
+	local purchasetype, amount, fuelamount, fuelType
 	if not Config.RenewedPhonePayment then
 		purchasetype = data.purchasetype
 	elseif data.purchasetype == "cash" then
@@ -978,6 +1021,7 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 	else
 		purchasetype = RefuelPurchaseType
 	end
+    fuelType = data.fuelType or "gasoline"
 	if Config.FuelDebug then print("Tipo de compra: "..purchasetype) end
 	if not Config.RenewedPhonePayment then
 		amount = data.fuelamounttotal
@@ -1113,6 +1157,7 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 			TaskPlayAnim(ped, Config.RefuelAnimationDictionary, Config.RefuelAnimation, 8.0, 1.0, -1, 1, 0, 0, 0, 0)
 			refueling = true
 			Refuelamount = 0
+			-- Start Refuel Loop
 			CreateThread(function()
 				while refueling do
 					if Refuelamount == nil then Refuelamount = 0 end
@@ -1131,7 +1176,7 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 							TriggerServerEvent("cdn-fuel:server:phone:givebackmoney", MoneyToGiveBack)
 							CachedFuelPrice = nil
 						else
-							TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
+							TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation, finalrefuelamount, fuelType)
 							CachedFuelPrice = nil
 						end
 						local curfuel = GetFuel(vehicle)
@@ -1151,6 +1196,15 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 					end
 				end
 			end)
+
+            local modelName = GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)):upper()
+            QBCore.Functions.TriggerCallback('cdn-fuel:server:GetVehicleFuelType', function(requiredFuel)
+                if requiredFuel ~= fuelType then
+                    if Config.FuelDebug then print("[DEBUG] WRONG FUEL DETECTED! Required: " .. tostring(requiredFuel) .. " | Used: " .. tostring(fuelType)) end
+                    QBCore.Functions.Notify("AVISO: Você está colocando o combustível errado! Isso causará danos ao motor.", "error", 10000)
+                    Entity(vehicle).state:set('wrong_fuel', true, true)
+                end
+            end, modelName, GetVehicleClass(vehicle))
 			-- TriggerServerEvent("InteractSound_SV:PlayOnSource", "refuel", 0.3)
 			if Config.Ox.Progress then
 				if lib.progressCircle({
@@ -1166,11 +1220,18 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 				}) then
 					refueling = false
 					if purchasetype == "cash" then
-						TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
+						TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation, amount, fuelType)
 					elseif purchasetype == "bank" then
 						if not Config.RenewedPhonePayment then
-							TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
+							TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation, amount, fuelType)
 						end
+					end
+					local curfuel = GetFuel(vehicle)
+					local finalfuel = (curfuel + amount)
+					if finalfuel > 99 and finalfuel < 100 then
+						SetFuel(vehicle, 100)
+					else
+						SetFuel(vehicle, finalfuel)
 					end
 					StopAnimTask(ped, Config.RefuelAnimationDictionary, Config.RefuelAnimation, 3.0, 3.0, -1, 2, 0, 0, 0, 0)
 					TriggerServerEvent("InteractSound_SV:PlayOnSource", "fuelstop", 0.4)
@@ -1194,7 +1255,14 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 				}, {}, {}, {}, function()
 					refueling = false
 					if not Config.RenewedPhonePayment or purchasetype == "cash" then
-						TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation)
+						TriggerServerEvent('cdn-fuel:server:PayForFuel', refillCost, purchasetype, FuelPrice, false, CachedFuelPrice, CurrentLocation, amount, fuelType)
+					end
+					local curfuel = GetFuel(vehicle)
+					local finalfuel = (curfuel + amount)
+					if finalfuel > 99 and finalfuel < 100 then
+						SetFuel(vehicle, 100)
+					else
+						SetFuel(vehicle, finalfuel)
 					end
 					StopAnimTask(ped, Config.RefuelAnimationDictionary, Config.RefuelAnimation, 3.0, 3.0, -1, 2, 0, 0, 0, 0)
 					TriggerServerEvent("InteractSound_SV:PlayOnSource", "fuelstop", 0.4)
@@ -1269,7 +1337,7 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelmenu', function(itemData)
 end)
 local pendingJerryCanIsAviation = false
 
-RegisterNetEvent('cdn-fuel:client:jerrycanfinalmenu', function(purchasetype, amount)
+RegisterNetEvent('cdn-fuel:client:jerrycanfinalmenu', function(purchasetype, amount, fuelType)
 	Moneyamount = nil
 	if purchasetype == 'bank' then
 		Moneyamount = QBCore.Functions.GetPlayerData().money['bank']
@@ -1280,9 +1348,11 @@ RegisterNetEvent('cdn-fuel:client:jerrycanfinalmenu', function(purchasetype, amo
     local isAviation = pendingJerryCanIsAviation or false
     local basePrice = isAviation and Config.AviationJerryCanPrice or Config.JerryCanPrice
     local cost = (basePrice + GlobalTax(basePrice)) * (amount or 1)
+
+    if Config.FuelDebug then print(string.format("[DEBUG] JerryCan Final Menu: Type=%s, Amount=%s, FuelType=%s, Location=%s, Cost=%s", purchasetype, amount, fuelType, CurrentLocation, cost)) end
     
     if Moneyamount >= math.ceil(cost) then
-		TriggerServerEvent('cdn-fuel:server:purchase:jerrycan', purchasetype, amount, CurrentLocation, isAviation)
+		TriggerServerEvent('cdn-fuel:server:purchase:jerrycan', purchasetype, amount, CurrentLocation, isAviation, fuelType)
 	else
 		if purchasetype == 'bank' then QBCore.Functions.Notify(Lang:t("not_enough_money_in_bank"), 'error') end
 		if purchasetype == "cash" then QBCore.Functions.Notify(Lang:t("not_enough_money_in_cash"), 'error') end
@@ -1344,6 +1414,12 @@ RegisterNetEvent('cdn-fuel:client:purchasejerrycan', function()
     pendingJerryCanIsAviation = (stationObject and stationObject.type == 'air')
     local basePrice = pendingJerryCanIsAviation and Config.AviationJerryCanPrice or Config.JerryCanPrice
 
+    local fuels = {
+        { id = 'gasoline', label = 'Gasolina', price = stationObject and stationObject.fuelprice or Config.CostMultiplier, icon = 'local_gas_station', color = '#FFA500', description = 'Combustível padrão para a maioria dos veículos de passeio.' },
+        { id = 'diesel', label = 'Diesel', price = stationObject and stationObject.dieselprice or (Config.CostMultiplier * 1.2), icon = 'rv_hookup', color = '#555555', description = 'Ideal para SUVs, caminhões e veículos de carga pesada.' },
+        { id = 'ethanol', label = 'Etanol', price = stationObject and stationObject.ethanolprice or (Config.CostMultiplier * 0.8), icon = 'eco', color = '#008000', description = 'Combustível renovável de alto desempenho para carros esportivos.' }
+    }
+
     SetNuiFocus(true, true)
     SendNUIMessage({
         action = "open",
@@ -1352,6 +1428,7 @@ RegisterNetEvent('cdn-fuel:client:purchasejerrycan', function()
             currentFuel = 0,
             price = basePrice,
             type = 'jerrycan',
+            availableFuels = fuels,
             tax = Config.GlobalTax,
             stationName = stationLabel,
             logo = stationObject and stationObject.logo
@@ -1577,16 +1654,25 @@ RegisterNetEvent('cdn-fuel:client:jerrycan:refillmenu', function()
         FuelPrice = Config.CostMultiplier
     end
 
+    local stationObject = Config.GasStations[CurrentLocation]
+    local fuels = {
+        { id = 'gasoline', label = 'Gasolina', price = stationObject and stationObject.fuelprice or Config.CostMultiplier, icon = 'local_gas_station', color = '#FFA500', description = 'Combustível padrão para a maioria dos veículos de passeio.' },
+        { id = 'diesel', label = 'Diesel', price = stationObject and stationObject.dieselprice or (Config.CostMultiplier * 1.2), icon = 'rv_hookup', color = '#555555', description = 'Ideal para SUVs, caminhões e veículos de carga pesada.' },
+        { id = 'ethanol', label = 'Etanol', price = stationObject and stationObject.ethanolprice or (Config.CostMultiplier * 0.8), icon = 'eco', color = '#008000', description = 'Combustível renovável de alto desempenho para carros esportivos.' }
+    }
+
     SendNUIMessage({
         action = "open",
         data = {
             type = "jerrycanRefill",
             jerryCans = jerryCans,
+            availableFuels = fuels,
             currentFuel = jerryCans[1].fuel, -- For initial UI state
             maxFuel = jerryCans[1].cap - jerryCans[1].fuel,
             price = FuelPrice,
             tax = Config.GlobalTax,
             stationName = Config.GasStations[CurrentLocation].label,
+            logo = stationObject and stationObject.logo
         }
     })
     SetNuiFocus(true, true)
@@ -1660,6 +1746,7 @@ RegisterNetEvent('cdn-fuel:jerrycan:refueljerrycan', function(data)
         PendingJerryCanData = itemData
         PendingRefuelAmount = tonumber(refuelAmount)
         PendingFuelPrice = FuelPrice
+        PendingFuelType = data.fuelType or 'gasoline'
 
         -- IMMERSIVE PART: Spawn on Ground
         if GroundJerryCanObj then DeleteObject(GroundJerryCanObj) end
@@ -1785,11 +1872,11 @@ RegisterNetEvent('cdn-fuel:client:startGroundRefill', function()
     if finished then
         QBCore.Functions.Notify(Lang:t("jerry_can_success"), 'success')
         local srcPlayerData = QBCore.Functions.GetPlayerData()
-        local fuelType = isAviationStation and 'aviation' or 'gasoline'
+        local fuelType = PendingFuelType or 'gasoline'
         TriggerServerEvent('cdn-fuel:info', "add", PendingRefuelAmount, srcPlayerData, PendingJerryCanData, fuelType)
 
         local total = (PendingRefuelAmount * PendingFuelPrice) + GlobalTax(PendingRefuelAmount * PendingFuelPrice)
-        TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "cash", PendingFuelPrice, false, nil, CurrentLocation)
+        TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "cash", PendingFuelPrice, false, nil, CurrentLocation, PendingRefuelAmount, fuelType)
         
         -- Cleanup
         DeleteObject(GroundJerryCanObj)
@@ -3004,6 +3091,7 @@ RegisterNUICallback('pay', function(data, cb)
     local method = data.method
     local type = data.type
 
+    if Config.FuelDebug then print("[DEBUG] pay callback: type=" .. tostring(type) .. ", amount=" .. tostring(amount)) end
     if type == 'syphon' then
         if not amount then return end
         TriggerEvent('cdn-syphoning:syphon', {
@@ -3021,20 +3109,22 @@ RegisterNUICallback('pay', function(data, cb)
         if not amount then return end
         TriggerEvent('cdn-fuel:jerrycan:refueljerrycan', {
             itemData = data.jerryCanData,
-            amount = amount
+            amount = amount,
+            fuelType = data.fuelType
         })
     else
         if not amount or not method then return end
         
         if type == 'jerrycan' then
-            TriggerEvent('cdn-fuel:client:jerrycanfinalmenu', method, amount)
+            TriggerEvent('cdn-fuel:client:jerrycanfinalmenu', method, amount, data.fuelType)
         elseif type == 'electric' then
              TriggerEvent('cdn-fuel:client:electric:ChargeVehicle', {
                 purchasetype = method,
                 fuelamounttotal = amount
             })
         else
-            TriggerServerEvent('cdn-fuel:server:OpenMenu', amount, inGasStation, false, method, tonumber(FuelPrice), CurrentLocation)
+            local price = data.price or tonumber(FuelPrice) or Config.CostMultiplier
+            TriggerServerEvent('cdn-fuel:server:OpenMenu', amount, inGasStation, false, method, price, CurrentLocation, data.fuelType)
         end
     end
     cb('ok')

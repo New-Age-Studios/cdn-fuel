@@ -155,14 +155,21 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         if Config.FuelDebug then print(Config.GasStations[location].shutoff) end
     end)
 
-    RegisterNetEvent('cdn-fuel:station:server:updatefuelprice', function(fuelprice, location)
+    RegisterNetEvent('cdn-fuel:station:server:updatefuelprice', function(fuelprice, location, fuelType)
         local src = source
-        if Config.FuelDebug then print('Attempting to update Location #'..location.."'s Fuel Price to a new price: $"..fuelprice) end
-        MySQL.Async.execute('UPDATE fuel_stations SET fuelprice = ? WHERE `location` = ?', {fuelprice, location})
+        local fuelType = fuelType or "gasoline"
+        local column = "fuelprice"
+        if fuelType == "diesel" then column = "dieselprice"
+        elseif fuelType == "ethanol" then column = "ethanolprice" end
+        
+        if Config.FuelDebug then print('Attempting to update Location #'..location.."'s "..fuelType.." Price to a new price: $"..fuelprice) end
+        MySQL.Async.execute(string.format('UPDATE fuel_stations SET %s = ? WHERE `location` = ?', column), {fuelprice, location})
         TriggerClientEvent('QBCore:Notify', src, Lang:t("station_fuel_price_success")..fuelprice..Lang:t("station_per_liter"), 'success')
         
         -- Update NUI
-        TriggerClientEvent('cdn-fuel:station:client:updateNUI', src, { fuelPrice = fuelprice })
+        local updateData = {}
+        updateData[fuelType == "gasoline" and "fuelPrice" or fuelType.."Price"] = fuelprice
+        TriggerClientEvent('cdn-fuel:station:client:updateNUI', src, updateData)
     end)
 
     RegisterNetEvent('cdn-fuel:station:server:buyUpgrade', function(data)
@@ -303,79 +310,79 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
     end)
 
 
-    RegisterNetEvent('cdn-fuel:stations:server:buyreserves', function(location, price, amount)
+    RegisterNetEvent('cdn-fuel:stations:server:buyreserves', function(location, price, amount, fuelType)
         local location = location
         local price = math.ceil(price)
         local amount = amount
         local src = source
+        local fuelType = fuelType or "gasoline"
         local Player = QBCore.Functions.GetPlayer(src)
         local OldBalance = 0
+        local ReserveBuyPossible = false
+        local NewAmount = 0
+        local OldAmount = 0
+
         local result = MySQL.Sync.fetchAll('SELECT * FROM fuel_stations WHERE `location` = ?', {location})
         if result and result[1] then
             local v = result[1]
             local stockLevel = v.stock_level or 0
             local maxCapacity = Config.StationUpgrades[stockLevel] and Config.StationUpgrades[stockLevel].capacity or Config.MaxFuelReserves
             
-            if Config.FuelDebug then print(json.encode(v)) print(v.fuel) end
-            if v.fuel + amount > maxCapacity then
+            -- Select correct stock column
+            local stockColumn = "fuel"
+            if fuelType == "diesel" then stockColumn = "diesel"
+            elseif fuelType == "ethanol" then stockColumn = "ethanol" end
+
+            OldAmount = tonumber(v[stockColumn]) or 0
+            if OldAmount + amount > maxCapacity then
                 ReserveBuyPossible = false
-                if Config.FuelDebug then print("Purchase is not possible, as reserves will be greater than the maximum capacity ("..maxCapacity..")!") end
                 TriggerClientEvent('QBCore:Notify', src, Lang:t("station_reserves_over_max"), 'error')
             else
                 OldBalance = tonumber(v.balance) or 0
                 if OldBalance >= price then
                     ReserveBuyPossible = true
-                    OldAmount = tonumber(v.fuel) or 0
                     NewAmount = OldAmount + amount
-                    if Config.FuelDebug then print("Purchase is possible, as reserves will be below or equal to the maximum amount and station has sufficient balance!") end
                 else
                     ReserveBuyPossible = false
                     TriggerClientEvent('QBCore:Notify', src, 'O posto não tem dinheiro suficiente no caixa para comprar reservas!', 'error')
-                    if Config.FuelDebug then print("Purchase is not possible, station balance is insufficient! Found: $"..OldBalance.." Required: $"..price) end
                 end
             end
-        else
-            if Config.FuelDebug then print("No Result Fetched!!") end
         end
         
-        if Config.FuelDebug then print("Attempting Sale Server Side for location: #"..location.." for Price: $"..price) end
-
-        local status = exports['maji-gasdelivery']:Refuelcdn_status()
-        if status then
-            TriggerClientEvent('QBCore:Notify', src, "Estamos com um pedido em andamento, tente mais tarde.", 'error', 10000)
-            return
-        end
-
         if ReserveBuyPossible then
             local newBalance = OldBalance - price
             MySQL.Async.execute('UPDATE fuel_stations SET balance = ? WHERE `location` = ?', {newBalance, location})
 
             -- Log Transaction
-            MySQL.Async.execute('INSERT INTO fuel_finance (station_id, type, amount, date) VALUES (?, ?, ?, ?)', {location, "Compra de Combustível", price, GetAdjustedTime()})
+            MySQL.Async.execute('INSERT INTO fuel_finance (station_id, type, amount, date) VALUES (?, ?, ?, ?)', {location, "Compra de " .. fuelType:gsub("^%l", string.upper), price, os.date('%Y-%m-%d %H:%M:%S')})
 
             if not Config.OwnersPickupFuel then
-                MySQL.Async.execute('UPDATE fuel_stations SET fuel = ? WHERE `location` = ?', {NewAmount, location})
-                if Config.FuelDebug then print("SQL Execute Update: fuel_station level to: "..NewAmount.. " Math: ("..amount.." + "..OldAmount.." = "..NewAmount) end
+                local stockColumn = "fuel"
+                if fuelType == "diesel" then stockColumn = "diesel"
+                elseif fuelType == "ethanol" then stockColumn = "ethanol" end
+
+                MySQL.Async.execute(string.format('UPDATE fuel_stations SET %s = ? WHERE `location` = ?', stockColumn), {NewAmount, location})
                 TriggerClientEvent('QBCore:Notify', src, "Reserva comprada com o dinheiro do posto! Descontado: $"..price, 'success')
                 
                 -- Update NUI
-                TriggerClientEvent('cdn-fuel:station:client:updateNUI', src, { balance = newBalance, fuelStock = NewAmount })
+                local updateData = { balance = newBalance }
+                updateData[fuelType == "gasoline" and "fuelStock" or fuelType.."Stock"] = NewAmount
+                TriggerClientEvent('cdn-fuel:station:client:updateNUI', src, updateData)
             else
                 FuelPickupSent[location] = {
                     ['src'] = src,
                     ['refuelAmount'] = NewAmount,
                     ['amountBought'] = amount,
+                    ['fuelType'] = fuelType
                 }
+                -- Compatibility with delivery scripts might need fuelType support
                 TriggerClientEvent("md-refuelcdn:client:set", -1, amount, NewAmount, location)
                 TriggerEvent("md-refuelcdn:server:set")
-                TriggerClientEvent('QBCore:Notify', -1, "Um novo carregamento de combustível está disponível!", 'success', 30000)
+                TriggerClientEvent('QBCore:Notify', -1, "Um novo carregamento de "..fuelType.." está disponível!", 'success', 30000)
                 TriggerClientEvent('QBCore:Notify', src, "Reserva solicitada com o dinheiro do posto! Descontado: $"..price, 'success')
                 
                 -- Update NUI
                 TriggerClientEvent('cdn-fuel:station:client:updateNUI', src, { balance = newBalance })
-                
-                -- TriggerClientEvent('cdn-fuel:station:client:initiatefuelpickup', src, amount, NewAmount, location)
-                if Config.FuelDebug then print("Initiating a Fuel Pickup for Location: "..location.." with for the amount of "..NewAmount.." | Triggered By: Source: "..src) end
             end
         end
     end)

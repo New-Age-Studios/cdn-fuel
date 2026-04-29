@@ -1,35 +1,54 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+
+interface FuelStocks {
+    gasoline: number;
+    diesel: number;
+    ethanol: number;
+}
+
+interface FuelPrices {
+    gasoline: number;
+    diesel: number;
+    ethanol: number;
+}
 
 interface FuelManagementProps {
-    stock: number;
+    stocks: FuelStocks;
     maxStock: number;
-    price: number;
-    reservePrice: number; // Cost to buy reserves
+    prices: FuelPrices;
+    reservePrice: number;
     onAction: (action: string, data?: any) => void;
 }
 
-const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price, reservePrice, onAction }) => {
-    const [newPrice, setNewPrice] = useState<string>(price.toString());
+type FuelType = 'gasoline' | 'diesel' | 'ethanol';
+
+const FuelManagement: React.FC<FuelManagementProps> = ({ stocks, maxStock, prices, reservePrice, onAction }) => {
+    const [activeFuel, setActiveFuel] = useState<FuelType>('gasoline');
+    const [newPrice, setNewPrice] = useState<string>(prices.gasoline.toString());
     const [buyAmount, setBuyAmount] = useState<string>('');
+
+    // Sync state when tab changes
+    useEffect(() => {
+        setNewPrice(prices[activeFuel].toString());
+        setBuyAmount('');
+    }, [activeFuel, prices]);
+
+    const stock = stocks[activeFuel];
     
-    // Convert to numbers safely
     const currentPrice = Number(newPrice);
     const amountToBuy = Number(buyAmount);
     const totalCost = amountToBuy * reservePrice;
     
-    // Quick add buttons
     const fillAmount = maxStock - stock;
     const availableSpace = maxStock - stock;
     const fuelPercentage = (stock / maxStock) * 100;
 
-    // Helper to format currency for very large numbers
     const formatValue = (val: number) => {
         if (val > 999999999999) return `R$ ${(val/1000000000).toFixed(1)}B`;
         if (val > 999999999) return `R$ ${(val/1000000).toFixed(1)}M`;
         return `R$ ${val.toLocaleString()}`;
     };
 
-    // Helper for progress bar color logic
     const getBarColor = () => {
         if (fuelPercentage < 25) return 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.3)]';
         if (fuelPercentage < 50) return 'bg-orange-500 shadow-[0_0_10px_rgba(249,115,22,0.3)]';
@@ -37,25 +56,52 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
         return 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.3)]';
     };
 
+    const fuelConfig = {
+        gasoline: { label: 'Gasolina', icon: 'local_gas_station', color: 'text-orange-500', bg: 'bg-orange-500/10' },
+        diesel: { label: 'Diesel', icon: 'rv_hookup', color: 'text-gray-400', bg: 'bg-gray-400/10' },
+        ethanol: { label: 'Etanol', icon: 'eco', color: 'text-green-500', bg: 'bg-green-500/10' }
+    };
+
     return (
         <div className="p-6 h-full flex flex-col gap-5 overflow-y-auto custom-scrollbar pb-16">
             
-            {/* Header */}
-            <div className="px-2">
-                 <h2 className="text-2xl font-bold text-primary mb-0.5">Gerenciamento de Combustível</h2>
-                 <p className="text-sm text-text-muted">Controle o estoque e ajuste os preços de venda</p>
+            <div className="px-2 flex flex-col md:flex-row md:items-end justify-between gap-4">
+                 <div>
+                    <h2 className="text-2xl font-bold text-primary mb-0.5">Gerenciamento de Combustível</h2>
+                    <p className="text-sm text-text-muted">Controle o estoque e ajuste os preços de venda</p>
+                 </div>
+
+                 {/* Fuel Tabs */}
+                 <div className="flex bg-dashboard-element/40 p-1 rounded-xl border border-border-color/30">
+                    {(Object.keys(fuelConfig) as FuelType[]).map((type) => (
+                        <button
+                            key={type}
+                            onClick={() => setActiveFuel(type)}
+                            className={`px-4 py-2 rounded-lg text-xs font-black uppercase tracking-widest transition-all flex items-center gap-2 ${
+                                activeFuel === type 
+                                ? 'bg-dashboard-card text-primary shadow-sm border border-border-color/50' 
+                                : 'text-text-muted hover:text-primary'
+                            }`}
+                        >
+                            <span className={`material-symbols-outlined text-sm ${activeFuel === type ? fuelConfig[type].color : ''}`}>
+                                {fuelConfig[type].icon}
+                            </span>
+                            {fuelConfig[type].label}
+                        </button>
+                    ))}
+                 </div>
             </div>
 
-            <div className="flex flex-col gap-5 w-full max-w-5xl mx-auto">
-                {/* 1. Buy Stock Section (TOP) */}
+            <div className="flex flex-col gap-5 w-full max-w-5xl mx-auto animate-in fade-in slide-in-from-bottom-4 duration-500">
+                {/* 1. Buy Stock Section */}
                 <div className="bg-dashboard-card border border-border-color rounded-2xl p-6 hover:border-red-500/10 transition-all group shadow-sm">
                      <div className="flex items-center justify-between mb-6">
                         <div className="flex items-center gap-3">
-                            <div className="p-3 rounded-xl bg-red-500/10 text-red-500 group-hover:rotate-6 transition-transform">
+                            <div className={`p-3 rounded-xl ${fuelConfig[activeFuel].bg} ${fuelConfig[activeFuel].color} group-hover:rotate-6 transition-transform`}>
                                 <span className="material-symbols-outlined text-2xl">local_shipping</span>
                             </div>
                             <div>
-                                <h3 className="text-lg font-black text-primary uppercase tracking-tight">Repor Estoque</h3>
+                                <h3 className="text-lg font-black text-primary uppercase tracking-tight">Repor Estoque {fuelConfig[activeFuel].label}</h3>
                                 <p className="text-xs text-text-muted">Custo de importação: <span className="text-red-400 font-bold">R${reservePrice.toFixed(2)} / L</span></p>
                             </div>
                         </div>
@@ -73,7 +119,6 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
                         </div>
                      </div>
                     
-                     {/* Progress Bar Container - DYNAMIC COLOR LOGIC */}
                      <div className="mb-8 bg-dashboard-element/20 p-4 rounded-xl border border-border-color/30">
                          <div className="relative">
                             <div className="flex justify-between text-[10px] font-black text-text-muted uppercase mb-3 px-1">
@@ -90,21 +135,19 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
                                     className={`h-full rounded-full transition-all duration-1000 ${getBarColor()}`} 
                                     style={{ width: `${fuelPercentage}%` }}
                                 >
-                                    {/* Glass Shine Effect */}
                                     <div className="w-full h-full bg-gradient-to-b from-white/20 to-transparent opacity-50"></div>
                                 </div>
                             </div>
                          </div>
                      </div>
 
-                     {/* Action Controls */}
                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-stretch">
                         <div className="space-y-2 flex flex-col h-full">
                             <label className="block text-[9px] font-black text-text-muted uppercase tracking-[0.15em] ml-1">Quantidade em Litros</label>
                             <div className="relative flex-1">
                                 <input 
                                     type="number" 
-                                    className="w-full h-[60px] bg-dashboard-element border border-border-color rounded-xl py-3 px-4 text-xl font-black text-primary focus:outline-none focus:border-red-500/50 transition-all placeholder:text-text-muted/20 pr-32 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                    className="w-full h-[60px] bg-dashboard-element border border-border-color rounded-xl py-3 px-4 text-xl font-black text-primary focus:outline-none focus:border-red-500/50 transition-all placeholder:text-text-muted/20 pr-32 [appearance:textfield]"
                                     placeholder="Ex: 5000"
                                     value={buyAmount}
                                     onChange={(e) => setBuyAmount(e.target.value)}
@@ -128,7 +171,7 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
                                     </p>
                                 </div>
                                 <button 
-                                    onClick={() => onAction('manage:buyStock', { amount: amountToBuy, price: totalCost })}
+                                    onClick={() => onAction('manage:buyStock', { amount: amountToBuy, price: totalCost, fuelType: activeFuel })}
                                     disabled={!amountToBuy || amountToBuy <= 0 || (stock + amountToBuy) > maxStock}
                                     className="px-6 rounded-lg font-black text-[10px] bg-red-500 text-white hover:bg-red-600 transition-all shadow-md shadow-red-500/10 disabled:opacity-30 disabled:cursor-not-allowed active:scale-95 uppercase tracking-widest"
                                 >
@@ -139,7 +182,7 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
                      </div>
                 </div>
 
-                {/* 2. Change Price Section (BOTTOM) */}
+                {/* 2. Change Price Section */}
                 <div className="bg-dashboard-card border border-border-color rounded-2xl p-6 hover:border-blue-500/10 transition-all group shadow-sm">
                      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
                         <div className="flex items-center gap-3">
@@ -147,7 +190,7 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
                                 <span className="material-symbols-outlined text-2xl">payments</span>
                             </div>
                             <div>
-                                <h3 className="text-lg font-black text-primary uppercase tracking-tight">Preço de Venda</h3>
+                                <h3 className="text-lg font-black text-primary uppercase tracking-tight">Preço de Venda {fuelConfig[activeFuel].label}</h3>
                                 <p className="text-xs text-text-muted">Ajuste o valor na bomba</p>
                             </div>
                         </div>
@@ -159,14 +202,14 @@ const FuelManagement: React.FC<FuelManagementProps> = ({ stock, maxStock, price,
                                     <span className="absolute left-4 top-1/2 -translate-y-1/2 text-xl font-black text-blue-500">R$</span>
                                     <input 
                                         type="number" 
-                                        className="w-full h-[54px] bg-dashboard-element border border-border-color rounded-xl py-3 pl-12 pr-4 text-2xl font-black text-primary focus:outline-none focus:border-blue-500/50 transition-all [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                                        className="w-full h-[54px] bg-dashboard-element border border-border-color rounded-xl py-3 pl-12 pr-4 text-2xl font-black text-primary focus:outline-none focus:border-blue-500/50 transition-all [appearance:textfield]"
                                         value={newPrice}
                                         onChange={(e) => setNewPrice(e.target.value)}
                                     />
                                 </div>
                             </div>
                             <button 
-                                onClick={() => onAction('manage:changePrice', { price: currentPrice })}
+                                onClick={() => onAction('manage:changePrice', { price: currentPrice, fuelType: activeFuel })}
                                 className="h-[54px] px-8 rounded-xl font-black text-[10px] bg-blue-500 text-white hover:bg-blue-600 transition-all shadow-md shadow-blue-500/10 active:scale-95 uppercase tracking-widest"
                             >
                                 Atualizar

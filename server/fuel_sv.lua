@@ -16,31 +16,37 @@ if Config.RenewedPhonePayment then
 	end)
 end
 
-RegisterNetEvent("cdn-fuel:server:OpenMenu", function(amount, inGasStation, hasWeapon, purchasetype, FuelPrice, location)
+RegisterNetEvent("cdn-fuel:server:OpenMenu", function(amount, inGasStation, hasWeapon, purchasetype, FuelPrice, location, fuelType)
 	local src = source
 	if not src then return end
 	local player = QBCore.Functions.GetPlayer(src)
 	if not player then return end
-	if not amount then if Config.FuelDebug then print("Amount is invalid!") end TriggerClientEvent('QBCore:Notify', src, Lang:t("more_than_zero"), 'error') return end
+	local amount = tonumber(amount)
+    local FuelPrice = tonumber(FuelPrice)
+    if not amount or not FuelPrice then 
+        if Config.FuelDebug then print("Amount or FuelPrice is invalid!", amount, FuelPrice) end 
+        return 
+    end
 	local FuelCost = amount*FuelPrice
 	local tax = GlobalTax(FuelCost)
 	local total = tonumber(FuelCost + tax)
 	if inGasStation == true and not hasWeapon then
 		if Config.RenewedPhonePayment and purchasetype == "bank" then
-			TriggerClientEvent("cdn-fuel:client:phone:PayForFuel", src, amount)
+			TriggerClientEvent("cdn-fuel:client:phone:PayForFuel", src, amount, fuelType)
 		else
 			if Config.FuelDebug then print("Skipping context menu (NUI override), starting refuel.") end
 			TriggerClientEvent('cdn-fuel:client:RefuelVehicle', src, {
 				fuelamounttotal = amount,
 				purchasetype = purchasetype,
-                location = location
+                location = location,
+                fuelType = fuelType
 			})
 
 		end
 	end
 end)
 
-RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, FuelPrice, electric, cachedPrice, location, liters)
+RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, FuelPrice, electric, cachedPrice, location, liters, fuelType)
 	local src = source
 	if not src then return end
 	local Player = QBCore.Functions.GetPlayer(src)
@@ -49,19 +55,14 @@ RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, Fu
 	if amount < 1 then
 		total = 0
 	end
+    
+    local fuelType = fuelType or "gasoline"
 	
     -- Sales Logging
-    if not location or location == 0 then
-        -- Fallback: try to find location by proximity if not passed (useful for some electric chargers)
-        -- We can't easily do it here without coordinates, but usually location should be passed.
-        if Config.FuelDebug then print("[CDN-FUEL] Warning: PayForFuel called with Location 0/nil") end
-    end
-
     if location and location ~= 0 then
         local buyerName = Player.PlayerData.charinfo.firstname .. " " .. Player.PlayerData.charinfo.lastname
         local fuelAmount = liters or 0
         if (not fuelAmount or fuelAmount == 0) and FuelPrice and FuelPrice > 0 then
-             -- Liter/kWh Amount = Total Money / (Price + Tax)
              fuelAmount = math.floor((total / (FuelPrice + GlobalTax(FuelPrice))) * 100) / 100
         end
 
@@ -76,19 +77,23 @@ RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, Fu
              -- Deduct Stock or Add Electric Consumption
              if fuelAmount > 0 then
                 if not electric then
-                    MySQL.Async.execute('UPDATE fuel_stations SET fuel = fuel - ? WHERE location = ? AND owned = 1', {fuelAmount, location})
+                    -- Deduct from specific stock based on fuelType
+                    local stockColumn = "fuel" -- Default Gasoline
+                    if fuelType == "diesel" then stockColumn = "diesel"
+                    elseif fuelType == "ethanol" then stockColumn = "ethanol"
+                    elseif fuelType == "aviation" then stockColumn = "fuel" -- Aviation usually uses main stock or dedicated
+                    end
+                    
+                    MySQL.Async.execute(string.format('UPDATE fuel_stations SET %s = %s - ? WHERE location = ? AND owned = 1', stockColumn, stockColumn), {fuelAmount, location})
                 else
                     -- Track kWh consumption for the owner to pay later
                     MySQL.Async.execute('UPDATE fuel_stations SET electric_consumed = electric_consumed + ? WHERE location = ? AND owned = 1', {fuelAmount, location})
-                    if Config.FuelDebug then print("[CDN-FUEL] Tracked "..fuelAmount.." kWh for Station #"..location) end
                 end
              end
         end
     end
 
 	local moneyremovetype = purchasetype
-	if Config.FuelDebug then print("Player is attempting to purchase fuel with the money type: " ..moneyremovetype) end
-	if Config.FuelDebug then print("Attempting to charge client: $"..total.." for Fuel @ "..FuelPrice.." PER LITER | PER KW") end
 	if purchasetype == "bank" then
 		moneyremovetype = "bank"
 	elseif purchasetype == "cash" then
@@ -99,20 +104,122 @@ RegisterNetEvent("cdn-fuel:server:PayForFuel", function(amount, purchasetype, Fu
 	Player.Functions.RemoveMoney(moneyremovetype, total, payString)
 end)
 
-RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amount, location, isAviation)
+-- [ SISTEMA DE MAPEAMENTO DE COMBUSTÍVEL ]
+local VehicleFuelMappings = {}
+
+local function LoadVehicleFuelMappings()
+    MySQL.Async.fetchAll('SELECT * FROM fuel_vehicle_mappings', {}, function(results)
+        VehicleFuelMappings = {}
+        if results then
+            for _, data in ipairs(results) do
+                VehicleFuelMappings[data.name:upper()] = {
+                    fuel_type = data.fuel_type,
+                    is_model = data.is_model == 1
+                }
+            end
+        end
+    end)
+end
+
+AddEventHandler('onResourceStart', function(resource)
+    if resource == GetCurrentResourceName() then
+        LoadVehicleFuelMappings()
+    end
+end)
+
+QBCore.Functions.CreateCallback('cdn-fuel:server:GetVehicleFuelType', function(source, cb, model, class)
+    local model = tostring(model):upper()
+    local className = Config.VehicleClasses[class] or tostring(class)
+    
+    -- 1. Check specific model mapping
+    if VehicleFuelMappings[model] then
+        cb(VehicleFuelMappings[model].fuel_type)
+        return
+    end
+    
+    -- 2. Check class mapping
+    if VehicleFuelMappings[className] then
+        cb(VehicleFuelMappings[className].fuel_type)
+        return
+    end
+    
+    -- 3. Fallback to config defaults
+    cb(Config.ClassFuelDefaults[class] or 'gasoline')
+end)
+
+QBCore.Functions.CreateCallback('cdn-fuel:server:GetMappings', function(source, cb)
+    MySQL.Async.fetchAll('SELECT * FROM fuel_vehicle_mappings', {}, function(results)
+        cb(results or {})
+    end)
+end)
+
+local VehicleClassesList = {
+    "Compacts", "Sedans", "SUVs", "Coupes", "Muscle", "Sports Classics", 
+    "Sports", "Super", "Motorcycles", "Off-Road", "Industrial", "Utility", 
+    "Vans", "Cycles", "Boats", "Helicopters", "Planes", "Service", "Emergency", 
+    "Military", "Commercial", "Trains", "Open Wheel"
+}
+
+QBCore.Functions.CreateCallback('cdn-fuel:server:SaveMapping', function(source, cb, data)
+    local src = source
+    if not QBCore.Functions.HasPermission(src, 'admin') and not QBCore.Functions.HasPermission(src, 'god') then return end
+    
+    local name = data.name:upper()
+    local fuelType = data.fuel_type
+    local isModel = data.is_model
+
+    MySQL.Async.execute('INSERT INTO fuel_vehicle_mappings (name, fuel_type, is_model) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE fuel_type = ?', 
+        {name, fuelType, isModel and 1 or 0, fuelType}, function(rowsChanged)
+        LoadVehicleFuelMappings()
+        MySQL.Async.fetchAll('SELECT * FROM fuel_vehicle_mappings', {}, function(newMappings)
+            cb(newMappings)
+        end)
+    end)
+end)
+
+QBCore.Functions.CreateCallback('cdn-fuel:server:DeleteMapping', function(source, cb, data)
+    local src = source
+    if not QBCore.Functions.HasPermission(src, 'admin') and not QBCore.Functions.HasPermission(src, 'god') then return end
+    
+    local name = data.name:upper()
+
+    MySQL.Async.execute('DELETE FROM fuel_vehicle_mappings WHERE name = ?', {name}, function(rowsChanged)
+        LoadVehicleFuelMappings()
+        MySQL.Async.fetchAll('SELECT * FROM fuel_vehicle_mappings', {}, function(newMappings)
+            cb(newMappings)
+        end)
+    end)
+end)
+
+QBCore.Functions.CreateCallback('cdn-fuel:server:GetMappingAdminData', function(source, cb)
+    MySQL.Async.fetchAll('SELECT * FROM fuel_vehicle_mappings', {}, function(results)
+        cb({
+            mappings = results or {},
+            classes = VehicleClassesList
+        })
+    end)
+end)
+
+-- Command to manage fuel mappings via NUI
+QBCore.Commands.Add('fueladmin', 'Abrir painel de gerenciamento de combustíveis', {}, false, function(source)
+    TriggerClientEvent('cdn-fuel:client:OpenMappingAdmin', source)
+end, 'admin')
+
+RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amount, location, isAviation, fuelType)
 	local src = source if not src then return end
     local amount = amount or 1
 	local Player = QBCore.Functions.GetPlayer(src) if not Player then return end
+    local fuelType = fuelType or (isAviation and "aviation" or "gasoline")
 	
     local basePrice = isAviation and Config.AviationJerryCanPrice or Config.JerryCanPrice
     local tax = GlobalTax(basePrice) 
     local total = math.ceil((basePrice + tax) * amount)
-	local moneyremovetype = purchasetype
-	if purchasetype == "bank" then
-		moneyremovetype = "bank"
-	elseif purchasetype == "cash" then
-		moneyremovetype = "cash"
-	end
+	local moneyremovetype = (purchasetype == "bank") and "bank" or "cash"
+
+    if Player.Functions.GetMoney(moneyremovetype) < total then
+        TriggerClientEvent('QBCore:Notify', src, "Dinheiro insuficiente!", "error")
+        return
+    end
 
     -- Sales Logging & Station Balance
     if location and location ~= 0 then
@@ -131,28 +238,44 @@ RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amo
              
              -- Deduct Stock
              if fuelToDeduct > 0 then
-                 MySQL.Async.execute('UPDATE fuel_stations SET fuel = fuel - ? WHERE location = ? AND owned = 1', {fuelToDeduct, location})
+                 local stockColumn = "fuel"
+                 if fuelType == "diesel" then stockColumn = "diesel"
+                 elseif fuelType == "ethanol" then stockColumn = "ethanol"
+                 elseif fuelType == "aviation" then stockColumn = "fuel"
+                 end
+                 
+                 MySQL.Async.execute(string.format('UPDATE fuel_stations SET %s = %s - ? WHERE location = ? AND owned = 1', stockColumn, stockColumn), {fuelToDeduct, location})
              end
         end
     end
 
-	local itemName = 'jerrycan' -- Always use 'jerrycan' item
+	local itemName = 'jerrycan'
 	local capacity = isAviation and Config.AviationJerryCanGas or Config.JerryCanGas
-    local fuelType = isAviation and "aviation" or "gasoline"
+    local fuelLabel = fuelType:gsub("^%l", string.upper)
+    if fuelType == "aviation" then fuelLabel = "Jet A-1" end
+
+    local amount = tonumber(amount) or 1
+
+    print(string.format("[cdn-fuel] INFO: Purchasing Jerry Can: Item=%s, Amount=%s, FuelType=%s, TotalCost=%s", itemName, amount, fuelType, total)) 
+    if not QBCore.Shared.Items[itemName] then
+        print(string.format("[cdn-fuel] ERROR: Item '%s' does not exist in QBCore.Shared.Items!", itemName))
+    end
 
 	if Config.Ox.Inventory then
-        local label = isAviation and "Galão de Jet A-1" or "Galão de Gasolina"
+        local label = "Galão de " .. fuelLabel
 		local info = {
             _fuel = tostring(capacity),
             fuel_type = fuelType,
             label = label,
-            description = string.format("**Tipo**: %s  \n**Combustível**: %sL", fuelType:gsub("^%l", string.upper), capacity)
+            description = string.format("Tipo: %s  \nCombustivel: %sL", fuelLabel, capacity)
         }
-		exports.ox_inventory:AddItem(src, itemName, amount, info)
-		local hasItem = exports.ox_inventory:GetItem(src, itemName, info, 1)
-		if hasItem then
+		if exports.ox_inventory:AddItem(src, itemName, amount, info) then
 			Player.Functions.RemoveMoney(moneyremovetype, total, Lang:t("jerry_can_payment_label"))
-		end
+            if Config.FuelDebug then print("[DEBUG] Jerry Can added successfully to Ox Inventory") end
+		else
+            if Config.FuelDebug then print("[DEBUG] Ox Inventory REJECTED AddItem (Check weight or item existence)") end
+            TriggerClientEvent('QBCore:Notify', src, "Erro ao entregar o galão (Inventário cheio?)", "error")
+        end
 	else
 		local info = {
             gasamount = capacity,
@@ -161,7 +284,11 @@ RegisterNetEvent("cdn-fuel:server:purchase:jerrycan", function(purchasetype, amo
 		if Player.Functions.AddItem(itemName, amount, false, info) then
 			TriggerClientEvent('inventory:client:ItemBox', QBCore.Shared.Items[itemName], "add", amount)
 			Player.Functions.RemoveMoney(moneyremovetype, total, Lang:t("jerry_can_payment_label"))
-		end
+            if Config.FuelDebug then print("[DEBUG] Jerry Can added successfully to QB Inventory") end
+		else
+            if Config.FuelDebug then print("[DEBUG] QB Inventory REJECTED AddItem (Check weight or item existence)") end
+            TriggerClientEvent('QBCore:Notify', src, "Erro ao entregar o galão (Inventário cheio?)", "error")
+        end
 	end
 end)
 
@@ -228,7 +355,9 @@ RegisterNetEvent('cdn-fuel:info', function(type, amount, srcPlayerData, itemdata
 			if ItemName == 'jerrycan' then
 				local fuel_amount = tonumber(itemdata.metadata._fuel)
                 local fuel_type = newFuelType or itemdata.metadata.fuel_type or 'gasoline'
-                local label = fuel_type == 'aviation' and "Galão de Jet A-1" or "Galão de Gasolina"
+                local fuelLabel = fuel_type:gsub("^%l", string.upper)
+                if fuel_type == "aviation" then fuelLabel = "Jet A-1" end
+                local label = "Galão de " .. fuelLabel
 				if type == "add" then
 					fuel_amount = fuel_amount + amount
 				elseif type == "remove" then
@@ -237,7 +366,7 @@ RegisterNetEvent('cdn-fuel:info', function(type, amount, srcPlayerData, itemdata
                 itemdata.metadata._fuel = tostring(fuel_amount)
                 itemdata.metadata.fuel_type = fuel_type
                 itemdata.metadata.label = label
-                itemdata.metadata.description = string.format("**Tipo**: %s  \n**Combustível**: %sL", fuel_type:gsub("^%l", string.upper), fuel_amount)
+                itemdata.metadata.description = string.format("Tipo: %s  \nCombustivel: %sL", fuelLabel, fuel_amount)
                 exports.ox_inventory:SetMetadata(src, itemdata.slot, itemdata.metadata)
 			elseif ItemName == 'syphoningkit' then
 				local fuel_amount = tonumber(itemdata.metadata._fuel)

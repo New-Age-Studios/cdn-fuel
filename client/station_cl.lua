@@ -82,6 +82,8 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                     if info == "all" or info == "reserves" then
                         if Config.FuelDebug then print("Fetched Reserve Levels: "..v.fuel.." Liters!") end
                         Currentreserveamount = v.fuel
+                        CurrentDieselAmount = v.diesel or 0
+                        CurrentEthanolAmount = v.ethanol or 0
                         ReserveLevels = Currentreserveamount or 0
                         if Currentreserveamount < Config.MaxFuelReserves then
                             ReservesNotBuyable = false
@@ -93,6 +95,8 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                     -- Fuel Price --
                     if info == "all" or info == "fuelprice" then
                         StationFuelPrice = v.fuelprice
+                        StationDieselPrice = v.dieselprice or 0
+                        StationEthanolPrice = v.ethanolprice or 0
                     end
                     -- Fuel Station's Balance --
                     if info == "all" or info == "balance" then
@@ -1571,8 +1575,12 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
                     data = {
                         balance = StationBalance or 0,
                         fuelStock = Currentreserveamount or 0,
+                        dieselStock = CurrentDieselAmount or 0,
+                        ethanolStock = CurrentEthanolAmount or 0,
                         maxStock = CurrentMaxCapacity,
                         fuelPrice = StationFuelPrice or 0,
+                        dieselPrice = StationDieselPrice or 0,
+                        ethanolPrice = StationEthanolPrice or 0,
                         ownerName = ownerName,
                         stationName = Config.GasStations[location].label,
                         reservePrice = CurrentReservePrice or Config.FuelReservesPrice or 3.0,
@@ -1989,7 +1997,7 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
 
     RegisterNUICallback('manage:changePrice', function(data, cb)
         if not CurrentLocation then return end
-        TriggerServerEvent("cdn-fuel:station:server:updatefuelprice", tonumber(data.price), CurrentLocation)
+        TriggerServerEvent("cdn-fuel:station:server:updatefuelprice", tonumber(data.price), CurrentLocation, data.fuelType)
         cb('ok')
     end)
 
@@ -1999,7 +2007,7 @@ if Config.PlayerOwnedGasStationsEnabled then -- This is so Player Owned Gas Stat
         -- Use the dynamic CurrentReservePrice calculated from Loyalty Level
         local pricePerLiter = CurrentReservePrice or Config.FuelReservesPrice or 3.0
         local price = math.ceil(GlobalTax(amount * pricePerLiter) + (amount * pricePerLiter))
-        TriggerServerEvent('cdn-fuel:stations:server:buyreserves', CurrentLocation, price, amount)
+        TriggerServerEvent('cdn-fuel:stations:server:buyreserves', CurrentLocation, price, amount, data.fuelType)
         cb('ok')
     end)
 
