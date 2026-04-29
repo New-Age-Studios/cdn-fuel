@@ -933,11 +933,26 @@ RegisterNetEvent('cdn-fuel:client:SendMenuToServer', function(type)
 		local CurFuel = GetVehicleFuelLevel(vehicle)
 		local playercashamount = QBCore.Functions.GetPlayerData().money['cash']
 		if not holdingnozzle and not type == 'special' then return end
-		local header
 		if type == 'special' then
 			header = "Veículo de reabastecimento"
 			RefuelingType = 'special'
 		else
+            local vClass = GetVehicleClass(vehicle)
+            local isAviationVeh = Config.AviationVehicleClasses[vClass] or false
+            local currentStation = Config.GasStations[CurrentLocation]
+            
+            if currentStation and currentStation.type == 'air' then
+                if not isAviationVeh then
+                    QBCore.Functions.Notify("Este posto fornece apenas combustível Jet A-1 para aeronaves!", 'error')
+                    return
+                end
+            else
+                if isAviationVeh then
+                    QBCore.Functions.Notify("Aeronaves não podem ser abastecidas com gasolina comum!", 'error')
+                    return
+                end
+            end
+
 			header = Config.GasStations[CurrentLocation].label
 		end
 		if CurFuel < 95 then
@@ -1212,7 +1227,13 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelmenu', function(itemData)
 
 	local class = GetVehicleClass(vehicle)
 	local isAviationVeh = Config.AviationVehicleClasses[class] or false
-	local isAviationCan = itemData.name == 'aviation_jerrycan'
+	local fuelType = 'gasoline'
+    if Config.Ox.Inventory then
+        fuelType = itemData.metadata.fuel_type or 'gasoline'
+    else
+        fuelType = itemData.info.fuel_type or 'gasoline'
+    end
+    local isAviationCan = (fuelType == 'aviation')
 
 	if isAviationVeh and not isAviationCan then
 		QBCore.Functions.Notify("Aeronaves precisam de combustível especial (Jet A-1)!", "error")
@@ -1225,7 +1246,7 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelmenu', function(itemData)
 
 	local jerrycanamount
 	if Config.Ox.Inventory then
-		jerrycanamount = tonumber(itemData.metadata.cdn_fuel)
+		jerrycanamount = tonumber(itemData.metadata._fuel)
 	else
 		jerrycanamount = itemData.info.gasamount
 	end
@@ -1346,7 +1367,7 @@ RegisterNetEvent('cdn-fuel:jerrycan:refuelvehicle', function(data)
 	local itemData = data.itemData
 	local jerrycanfuelamount
 	if Config.Ox.Inventory then
-		jerrycanfuelamount = tonumber(itemData.metadata.cdn_fuel)
+		jerrycanfuelamount = tonumber(itemData.metadata._fuel)
 	else
 		jerrycanfuelamount = itemData.info.gasamount
 	end
@@ -1500,33 +1521,44 @@ RegisterNetEvent('cdn-fuel:client:jerrycan:refillmenu', function()
     end
 
     isAviationStation = (stationObject and stationObject.type == 'air')
-    local allowedItem = isAviationStation and 'aviation_jerrycan' or 'jerrycan'
     local allowedCap = isAviationStation and Config.AviationJerryCanCap or Config.JerryCanCap
 
     local jerryCans = {}
     if Config.Ox.Inventory then
-        local items = exports.ox_inventory:Search('slots', allowedItem)
+        local items = exports.ox_inventory:Search('slots', 'jerrycan')
         if items then
             for _, item in pairs(items) do
-                table.insert(jerryCans, {
-                    fuel = tonumber(item.metadata.cdn_fuel) or 0,
-                    cap = allowedCap,
-                    itemData = item,
-                    name = item.label or (isAviationStation and "Galão de Aviação" or "Galão de Combustível")
-                })
+                local fuelAmount = tonumber(item.metadata._fuel) or 0
+                local fuelType = item.metadata.fuel_type or 'gasoline'
+                
+                -- Se estiver vazio, pode abastecer em qualquer lugar. 
+                -- Se tiver combustível, deve bater com o tipo do posto.
+                if fuelAmount == 0 or (isAviationStation and fuelType == 'aviation') or (not isAviationStation and fuelType == 'gasoline') then
+                    table.insert(jerryCans, {
+                        fuel = fuelAmount,
+                        cap = allowedCap,
+                        itemData = item,
+                        name = item.label or (isAviationStation and "Galão de Aviação" or "Galão de Combustível")
+                    })
+                end
             end
         end
     else
         local items = QBCore.Functions.GetPlayerData().items
         if items then
             for slot, item in pairs(items) do
-                if item.name == allowedItem then
-                    table.insert(jerryCans, {
-                        fuel = tonumber(item.info.gasamount) or 0,
-                        cap = allowedCap,
-                        itemData = item,
-                        name = item.label or (isAviationStation and "Galão de Aviação" or "Galão de Combustível")
-                    })
+                if item.name == 'jerrycan' then
+                    local fuelAmount = tonumber(item.info.gasamount) or 0
+                    local fuelType = item.info.fuel_type or 'gasoline'
+
+                    if fuelAmount == 0 or (isAviationStation and fuelType == 'aviation') or (not isAviationStation and fuelType == 'gasoline') then
+                        table.insert(jerryCans, {
+                            fuel = fuelAmount,
+                            cap = allowedCap,
+                            itemData = item,
+                            name = item.label or (isAviationStation and "Galão de Aviação" or "Galão de Combustível")
+                        })
+                    end
                 end
             end
         end
@@ -1575,15 +1607,20 @@ RegisterNetEvent('cdn-fuel:jerrycan:refueljerrycan', function(data)
 	end
 	local jerrycanfuelamount
 	if Config.Ox.Inventory then
-		jerrycanfuelamount = tonumber(itemData.metadata.cdn_fuel)
+		jerrycanfuelamount = tonumber(itemData.metadata._fuel)
 	else
 		jerrycanfuelamount = itemData.info.gasamount
 	end
 
 	local ped = PlayerPedId()
 
-    local ItemName = data.itemData.name
-    local itemCap = (ItemName == 'aviation_jerrycan') and Config.AviationJerryCanCap or Config.JerryCanCap
+    local fuelType = 'gasoline'
+    if Config.Ox.Inventory then
+        fuelType = data.itemData.metadata.fuel_type or 'gasoline'
+    else
+        fuelType = data.itemData.info.fuel_type or 'gasoline'
+    end
+    local itemCap = (fuelType == 'aviation') and Config.AviationJerryCanCap or Config.JerryCanCap
 
     if jerrycanfuelamount == itemCap then QBCore.Functions.Notify(Lang:t("jerry_can_is_full"), 'error') return end
     
@@ -1748,7 +1785,8 @@ RegisterNetEvent('cdn-fuel:client:startGroundRefill', function()
     if finished then
         QBCore.Functions.Notify(Lang:t("jerry_can_success"), 'success')
         local srcPlayerData = QBCore.Functions.GetPlayerData()
-        TriggerServerEvent('cdn-fuel:info', "add", PendingRefuelAmount, srcPlayerData, PendingJerryCanData)
+        local fuelType = isAviationStation and 'aviation' or 'gasoline'
+        TriggerServerEvent('cdn-fuel:info', "add", PendingRefuelAmount, srcPlayerData, PendingJerryCanData, fuelType)
 
         local total = (PendingRefuelAmount * PendingFuelPrice) + GlobalTax(PendingRefuelAmount * PendingFuelPrice)
         TriggerServerEvent('cdn-fuel:server:PayForFuel', total, "cash", PendingFuelPrice, false, nil, CurrentLocation)
@@ -1810,7 +1848,7 @@ RegisterNetEvent('cdn-syphoning:syphon:menu', function(itemData)
         local currentFuel = GetFuel(vehicle)
         local kitFuel = 0
         if Config.Ox.Inventory then
-            kitFuel = tonumber(itemData.metadata.cdn_fuel) or 0
+            kitFuel = tonumber(itemData.metadata._fuel) or 0
         else
             kitFuel = itemData.info.gasamount or 0
         end
@@ -1854,7 +1892,7 @@ RegisterNetEvent('cdn-syphoning:syphon', function(data)
 		local currentsyphonamount = nil
 
 		if Config.Ox.Inventory then
-			currentsyphonamount = tonumber(data.itemData.metadata.cdn_fuel)
+			currentsyphonamount = tonumber(data.itemData.metadata._fuel)
 			HasSyphon = exports.ox_inventory:Search('count', 'syphoningkit')
 		else
 			currentsyphonamount = data.itemData.info.gasamount or 0
@@ -2616,11 +2654,16 @@ CreateThread(function()
 				canInteract = function(entity)
 					if inGasStation and not refueling and holdingnozzle then
 						local currentStation = Config.GasStations[CurrentLocation]
+                        local vClass = GetVehicleClass(entity)
+                        local isAviationVeh = Config.AviationVehicleClasses[vClass] or false
 						if currentStation and currentStation.type == 'air' then
-							local vClass = GetVehicleClass(entity)
-							if not Config.AviationVehicleClasses[vClass] then
+							if not isAviationVeh then
 								return false
 							end
+                        else
+                            if isAviationVeh then
+                                return false
+                            end
 						end
 						return true
 					end
@@ -2745,11 +2788,16 @@ CreateThread(function()
 					canInteract = function(entity)
 						if inGasStation and not refueling and holdingnozzle then
 							local currentStation = Config.GasStations[CurrentLocation]
+                            local vClass = GetVehicleClass(entity)
+                            local isAviationVeh = Config.AviationVehicleClasses[vClass] or false
 							if currentStation and currentStation.type == 'air' then
-								local vClass = GetVehicleClass(entity)
-								if not Config.AviationVehicleClasses[vClass] then
+								if not isAviationVeh then
 									return false
 								end
+                            else
+                                if isAviationVeh then
+                                    return false
+                                end
 							end
 							return true
 						end
