@@ -1199,10 +1199,16 @@ RegisterNetEvent('cdn-fuel:client:RefuelVehicle', function(data)
 
             local modelName = GetDisplayNameFromVehicleModel(GetEntityModel(vehicle)):upper()
             QBCore.Functions.TriggerCallback('cdn-fuel:server:GetVehicleFuelType', function(requiredFuel)
+                -- Store the current fuel type in the vehicle
+                Entity(vehicle).state:set('fuel_type', fuelType, true)
+                
                 if requiredFuel ~= fuelType then
                     if Config.FuelDebug then print("[DEBUG] WRONG FUEL DETECTED! Required: " .. tostring(requiredFuel) .. " | Used: " .. tostring(fuelType)) end
                     QBCore.Functions.Notify("AVISO: Você está colocando o combustível errado! Isso causará danos ao motor.", "error", 10000)
                     Entity(vehicle).state:set('wrong_fuel', true, true)
+                else
+                    -- Correct fuel used, reset damage state
+                    Entity(vehicle).state:set('wrong_fuel', false, true)
                 end
             end, modelName, GetVehicleClass(vehicle))
 			-- TriggerServerEvent("InteractSound_SV:PlayOnSource", "refuel", 0.3)

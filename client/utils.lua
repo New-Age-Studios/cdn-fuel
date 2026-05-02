@@ -83,11 +83,12 @@ CreateThread(function()
             
             QBCore.Functions.TriggerCallback('cdn-fuel:server:GetVehicleFuelType', function(fuelType)
                 local hasWrongFuel = Entity(vehicle).state.wrong_fuel
+                local currentFuelInTank = Entity(vehicle).state.fuel_type or "gasoline"
                 local statusMsg = hasWrongFuel and "STATUS: [ERRO DE COMBUSTÍVEL]" or "STATUS: [OK]"
                 
                 if Config.FuelDebug then
-                    QBCore.Functions.Notify(string.format("VEÍCULO: %s | TIPO: %s | %s", model, fuelType, statusMsg), "primary", 5000)
-                    print(string.format("[DEBUG] Entry: Model=%s, Class=%s, FuelType=%s, WrongFuel=%s", model, class, fuelType, tostring(hasWrongFuel)))
+                    QBCore.Functions.Notify(string.format("VEÍCULO: %s | REQUER: %s | NO TANQUE: %s | %s", model, fuelType, currentFuelInTank, statusMsg), "primary", 5000)
+                    print(string.format("[DEBUG] Entry: Model=%s, Required=%s, InTank=%s, WrongFuel=%s", model, fuelType, currentFuelInTank, tostring(hasWrongFuel)))
                 end
             end, model, class)
         elseif vehicle == 0 then
